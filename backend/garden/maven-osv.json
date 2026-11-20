@@ -1,0 +1,291 @@
+{
+  "formatVersion": 1,
+  "ecosystem": "Maven",
+  "versionFormat": "numeric-with-milestones",
+  "snapshot": {
+    "date": "2026-11-20",
+    "url": "https://api.osv.dev/v1/query",
+    "advisories": "GitHub Advisory Database (CC BY 4.0), via OSV",
+    "packageQuery": "Maven package name without a version, all result pages"
+  },
+  "packages": [
+    "com.h2database:h2",
+    "com.mysql:mysql-connector-j",
+    "com.ninja-squad:springmockk",
+    "javax.cache:cache-api",
+    "org.glassfish.jaxb:jaxb-runtime",
+    "org.jetbrains.kotlin:kotlin-reflect",
+    "org.junit.platform:junit-platform-launcher",
+    "org.springframework.boot:spring-boot-devtools",
+    "org.springframework.boot:spring-boot-starter-actuator",
+    "org.springframework.boot:spring-boot-starter-cache",
+    "org.springframework.boot:spring-boot-starter-data-jpa",
+    "org.springframework.boot:spring-boot-starter-data-jpa-test",
+    "org.springframework.boot:spring-boot-starter-jdbc",
+    "org.springframework.boot:spring-boot-starter-security",
+    "org.springframework.boot:spring-boot-starter-test",
+    "org.springframework.boot:spring-boot-starter-thymeleaf",
+    "org.springframework.boot:spring-boot-starter-validation",
+    "org.springframework.boot:spring-boot-starter-webflux",
+    "org.springframework.boot:spring-boot-starter-webmvc",
+    "org.springframework.boot:spring-boot-starter-webmvc-test",
+    "org.springframework.security:spring-security-test",
+    "org.webjars.npm:bootstrap",
+    "org.webjars.npm:font-awesome",
+    "org.webjars:webjars-locator-lite",
+    "tools.jackson.module:jackson-module-kotlin"
+  ],
+  "vulnerabilities": [
+    {
+      "id": "GHSA-22wj-vf5f-wrvj",
+      "aliases": [
+        "CVE-2022-45868"
+      ],
+      "group": "com.h2database",
+      "artifact": "h2",
+      "ranges": [
+        {
+          "lower": "1.4.198",
+          "lowerInclusive": true,
+          "upper": "2.2.220",
+          "upperInclusive": false
+        }
+      ],
+      "fixedVersions": [
+        "2.2.220"
+      ],
+      "severity": "HIGH"
+    },
+    {
+      "id": "GHSA-45hx-wfhj-473x",
+      "aliases": [
+        "CVE-2022-23221"
+      ],
+      "group": "com.h2database",
+      "artifact": "h2",
+      "ranges": [
+        {
+          "lower": null,
+          "lowerInclusive": true,
+          "upper": "2.1.210",
+          "upperInclusive": false
+        }
+      ],
+      "fixedVersions": [
+        "2.1.210"
+      ],
+      "severity": "CRITICAL"
+    },
+    {
+      "id": "GHSA-7rpj-hg47-cx62",
+      "aliases": [
+        "CVE-2021-23463",
+        "SNYK-JAVA-COMH2DATABASE-1769238"
+      ],
+      "group": "com.h2database",
+      "artifact": "h2",
+      "ranges": [
+        {
+          "lower": "1.4.198",
+          "lowerInclusive": true,
+          "upper": "2.0.202",
+          "upperInclusive": false
+        }
+      ],
+      "fixedVersions": [
+        "2.0.202"
+      ],
+      "severity": "HIGH"
+    },
+    {
+      "id": "GHSA-h376-j262-vhq6",
+      "aliases": [
+        "CVE-2021-42392"
+      ],
+      "group": "com.h2database",
+      "artifact": "h2",
+      "ranges": [
+        {
+          "lower": "1.1.100",
+          "lowerInclusive": true,
+          "upper": "2.0.206",
+          "upperInclusive": false
+        }
+      ],
+      "fixedVersions": [
+        "2.0.206"
+      ],
+      "severity": "CRITICAL"
+    },
+    {
+      "id": "GHSA-m6vm-37g8-gqvh",
+      "aliases": [
+        "CVE-2023-22102"
+      ],
+      "group": "com.mysql",
+      "artifact": "mysql-connector-j",
+      "ranges": [
+        {
+          "lower": null,
+          "lowerInclusive": true,
+          "upper": "8.2.0",
+          "upperInclusive": false
+        }
+      ],
+      "fixedVersions": [
+        "8.2.0"
+      ],
+      "severity": "HIGH"
+    },
+    {
+      "id": "GHSA-56v8-86gj-66jp",
+      "aliases": [
+        "CVE-2026-40972"
+      ],
+      "group": "org.springframework.boot",
+      "artifact": "spring-boot-devtools",
+      "ranges": [
+        {
+          "lower": "4.0.0",
+          "lowerInclusive": true,
+          "upper": "4.0.6",
+          "upperInclusive": false
+        },
+        {
+          "lower": "3.5.0",
+          "lowerInclusive": true,
+          "upper": "3.5.14",
+          "upperInclusive": false
+        },
+        {
+          "lower": "3.4.0",
+          "lowerInclusive": true,
+          "upper": "3.4.15",
+          "upperInclusive": true
+        },
+        {
+          "lower": "3.3.0",
+          "lowerInclusive": true,
+          "upper": "3.3.18",
+          "upperInclusive": true
+        },
+        {
+          "lower": null,
+          "lowerInclusive": true,
+          "upper": "2.7.32",
+          "upperInclusive": true
+        }
+      ],
+      "fixedVersions": [
+        "3.5.14",
+        "4.0.6"
+      ],
+      "severity": "HIGH"
+    },
+    {
+      "id": "GHSA-8hfc-fq58-r658",
+      "aliases": [
+        "CVE-2026-22731"
+      ],
+      "group": "org.springframework.boot",
+      "artifact": "spring-boot-starter-actuator",
+      "ranges": [
+        {
+          "lower": "3.4.0",
+          "lowerInclusive": true,
+          "upper": "3.4.13",
+          "upperInclusive": true
+        },
+        {
+          "lower": "3.5.0",
+          "lowerInclusive": true,
+          "upper": "3.5.12",
+          "upperInclusive": false
+        },
+        {
+          "lower": "4.0.0-M1",
+          "lowerInclusive": true,
+          "upper": "4.0.4",
+          "upperInclusive": false
+        }
+      ],
+      "fixedVersions": [
+        "3.5.12",
+        "4.0.4"
+      ],
+      "severity": "HIGH"
+    },
+    {
+      "id": "GHSA-mgvc-8q2h-5pgc",
+      "aliases": [
+        "CVE-2026-22733"
+      ],
+      "group": "org.springframework.boot",
+      "artifact": "spring-boot-starter-actuator",
+      "ranges": [
+        {
+          "lower": "4.0.0-M1",
+          "lowerInclusive": true,
+          "upper": "4.0.4",
+          "upperInclusive": false
+        },
+        {
+          "lower": "3.5.0",
+          "lowerInclusive": true,
+          "upper": "3.5.12",
+          "upperInclusive": false
+        },
+        {
+          "lower": "3.4.0",
+          "lowerInclusive": true,
+          "upper": "3.4.13",
+          "upperInclusive": true
+        },
+        {
+          "lower": "3.0.0",
+          "lowerInclusive": true,
+          "upper": "3.3.13",
+          "upperInclusive": true
+        },
+        {
+          "lower": null,
+          "lowerInclusive": true,
+          "upper": "2.7.18",
+          "upperInclusive": true
+        }
+      ],
+      "fixedVersions": [
+        "3.5.12",
+        "4.0.4"
+      ],
+      "severity": "HIGH"
+    },
+    {
+      "id": "GHSA-36p3-wjmg-h94x",
+      "aliases": [
+        "CVE-2022-22965"
+      ],
+      "group": "org.springframework.boot",
+      "artifact": "spring-boot-starter-webflux",
+      "ranges": [
+        {
+          "lower": null,
+          "lowerInclusive": true,
+          "upper": "2.5.12",
+          "upperInclusive": false
+        },
+        {
+          "lower": "2.6.0",
+          "lowerInclusive": true,
+          "upper": "2.6.6",
+          "upperInclusive": false
+        }
+      ],
+      "fixedVersions": [
+        "2.5.12",
+        "2.6.6"
+      ],
+      "severity": "CRITICAL"
+    }
+  ]
+}

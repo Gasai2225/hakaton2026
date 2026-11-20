@@ -1,0 +1,212 @@
+{
+  "4.0.9": {
+    "sources": [
+      {
+        "url": "https://repo.maven.apache.org/maven2/org/springframework/boot/spring-boot-dependencies/4.0.9/spring-boot-dependencies-4.0.9.pom",
+        "sha256": "1abafbcf73c8829129dd5fdd2aca9815d1faf23d70b40f9cd005593ee3373a8e"
+      },
+      {
+        "url": "https://repo.maven.apache.org/maven2/tools/jackson/jackson-bom/3.1.7/jackson-bom-3.1.7.pom",
+        "sha256": "26c28ddf86ee17de2da550e0e8e88a14ed22370c880d813c88618df5f67e27ff"
+      },
+      {
+        "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-bom/2.2.21/kotlin-bom-2.2.21.pom",
+        "sha256": "aad0027622794373257223f13d91c5a27da98b319c02b945bade05546e16ff32"
+      },
+      {
+        "url": "https://repo.maven.apache.org/maven2/org/junit/junit-bom/6.0.3/junit-bom-6.0.3.pom",
+        "sha256": "a655b6a5dc00d1bebc91fb2b15c0c7e8aeac9d6bdcf879595505370e27530287"
+      },
+      {
+        "url": "https://repo.maven.apache.org/maven2/org/springframework/security/spring-security-bom/7.0.8/spring-security-bom-7.0.8.pom",
+        "sha256": "1339dd9e6944a6dc7bcca74e19c8e3a7ea1b6601a09dcf47f6ca222a67ce17c6"
+      }
+    ],
+    "packages": {
+      "com.h2database:h2": {
+        "version": "2.4.240",
+        "property": "h2.version"
+      },
+      "com.mysql:mysql-connector-j": {
+        "version": "9.7.0",
+        "property": "mysql.version"
+      },
+      "javax.cache:cache-api": {
+        "version": "1.1.1",
+        "property": "javax-cache.version"
+      },
+      "org.glassfish.jaxb:jaxb-runtime": {
+        "version": "4.0.9",
+        "property": "glassfish-jaxb.version"
+      },
+      "org.jetbrains.kotlin:kotlin-reflect": {
+        "version": "2.2.21",
+        "importProperty": "kotlin.version",
+        "importVersion": "2.2.21"
+      },
+      "org.junit.platform:junit-platform-launcher": {
+        "version": "6.0.3",
+        "importProperty": "junit-jupiter.version",
+        "importVersion": "6.0.3"
+      },
+      "org.springframework.boot:spring-boot-devtools": {
+        "version": "4.0.9"
+      },
+      "org.springframework.boot:spring-boot-starter-actuator": {
+        "version": "4.0.9"
+      },
+      "org.springframework.boot:spring-boot-starter-cache": {
+        "version": "4.0.9"
+      },
+      "org.springframework.boot:spring-boot-starter-data-jpa": {
+        "version": "4.0.9"
+      },
+      "org.springframework.boot:spring-boot-starter-data-jpa-test": {
+        "version": "4.0.9"
+      },
+      "org.springframework.boot:spring-boot-starter-jdbc": {
+        "version": "4.0.9"
+      },
+      "org.springframework.boot:spring-boot-starter-security": {
+        "version": "4.0.9"
+      },
+      "org.springframework.boot:spring-boot-starter-test": {
+        "version": "4.0.9"
+      },
+      "org.springframework.boot:spring-boot-starter-thymeleaf": {
+        "version": "4.0.9"
+      },
+      "org.springframework.boot:spring-boot-starter-validation": {
+        "version": "4.0.9"
+      },
+      "org.springframework.boot:spring-boot-starter-webflux": {
+        "version": "4.0.9"
+      },
+      "org.springframework.boot:spring-boot-starter-webmvc": {
+        "version": "4.0.9"
+      },
+      "org.springframework.boot:spring-boot-starter-webmvc-test": {
+        "version": "4.0.9"
+      },
+      "org.springframework.security:spring-security-test": {
+        "version": "7.0.8",
+        "importProperty": "spring-security.version",
+        "importVersion": "7.0.8"
+      },
+      "org.webjars:webjars-locator-lite": {
+        "version": "1.1.5",
+        "property": "webjars-locator-lite.version"
+      },
+      "tools.jackson.module:jackson-module-kotlin": {
+        "version": "3.1.7",
+        "importProperty": "jackson-bom.version",
+        "importVersion": "3.1.7"
+      }
+    }
+  },
+  "4.1.2": {
+    "sources": [
+      {
+        "url": "https://repo.maven.apache.org/maven2/org/springframework/boot/spring-boot-dependencies/4.1.2/spring-boot-dependencies-4.1.2.pom",
+        "sha256": "3ebfa36de39b9231236456542b09daa0d071b6f4780209323dbe6795a4522124"
+      },
+      {
+        "url": "https://repo.maven.apache.org/maven2/tools/jackson/jackson-bom/3.1.7/jackson-bom-3.1.7.pom",
+        "sha256": "26c28ddf86ee17de2da550e0e8e88a14ed22370c880d813c88618df5f67e27ff"
+      },
+      {
+        "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-bom/2.3.21/kotlin-bom-2.3.21.pom",
+        "sha256": "950704bad04c5143656cfca1d2c574f25fcad9cac33905ab22a57e9fdf7bfd88"
+      },
+      {
+        "url": "https://repo.maven.apache.org/maven2/org/junit/junit-bom/6.0.3/junit-bom-6.0.3.pom",
+        "sha256": "a655b6a5dc00d1bebc91fb2b15c0c7e8aeac9d6bdcf879595505370e27530287"
+      },
+      {
+        "url": "https://repo.maven.apache.org/maven2/org/springframework/security/spring-security-bom/7.1.2/spring-security-bom-7.1.2.pom",
+        "sha256": "d04940d41bbcb1b8bbfe5396e6450ed582962686e55c43477fd3db7e0dcbf2db"
+      }
+    ],
+    "packages": {
+      "com.h2database:h2": {
+        "version": "2.4.240",
+        "property": "h2.version"
+      },
+      "com.mysql:mysql-connector-j": {
+        "version": "9.7.0",
+        "property": "mysql.version"
+      },
+      "javax.cache:cache-api": {
+        "version": "1.1.1",
+        "property": "javax-cache.version"
+      },
+      "org.glassfish.jaxb:jaxb-runtime": {
+        "version": "4.0.9",
+        "property": "glassfish-jaxb.version"
+      },
+      "org.jetbrains.kotlin:kotlin-reflect": {
+        "version": "2.3.21",
+        "importProperty": "kotlin.version",
+        "importVersion": "2.3.21"
+      },
+      "org.junit.platform:junit-platform-launcher": {
+        "version": "6.0.3",
+        "importProperty": "junit-jupiter.version",
+        "importVersion": "6.0.3"
+      },
+      "org.springframework.boot:spring-boot-devtools": {
+        "version": "4.1.2"
+      },
+      "org.springframework.boot:spring-boot-starter-actuator": {
+        "version": "4.1.2"
+      },
+      "org.springframework.boot:spring-boot-starter-cache": {
+        "version": "4.1.2"
+      },
+      "org.springframework.boot:spring-boot-starter-data-jpa": {
+        "version": "4.1.2"
+      },
+      "org.springframework.boot:spring-boot-starter-data-jpa-test": {
+        "version": "4.1.2"
+      },
+      "org.springframework.boot:spring-boot-starter-jdbc": {
+        "version": "4.1.2"
+      },
+      "org.springframework.boot:spring-boot-starter-security": {
+        "version": "4.1.2"
+      },
+      "org.springframework.boot:spring-boot-starter-test": {
+        "version": "4.1.2"
+      },
+      "org.springframework.boot:spring-boot-starter-thymeleaf": {
+        "version": "4.1.2"
+      },
+      "org.springframework.boot:spring-boot-starter-validation": {
+        "version": "4.1.2"
+      },
+      "org.springframework.boot:spring-boot-starter-webflux": {
+        "version": "4.1.2"
+      },
+      "org.springframework.boot:spring-boot-starter-webmvc": {
+        "version": "4.1.2"
+      },
+      "org.springframework.boot:spring-boot-starter-webmvc-test": {
+        "version": "4.1.2"
+      },
+      "org.springframework.security:spring-security-test": {
+        "version": "7.1.2",
+        "importProperty": "spring-security.version",
+        "importVersion": "7.1.2"
+      },
+      "org.webjars:webjars-locator-lite": {
+        "version": "1.1.5",
+        "property": "webjars-locator-lite.version"
+      },
+      "tools.jackson.module:jackson-module-kotlin": {
+        "version": "3.1.7",
+        "importProperty": "jackson-bom.version",
+        "importVersion": "3.1.7"
+      }
+    }
+  }
+}

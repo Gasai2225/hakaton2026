@@ -1,0 +1,7 @@
+spring:
+  main:
+    web-application-type: none
+parcel:
+  dispatch-token: training-only-dispatch
+  api-key: ${PARCEL_KEY:${BACKUP_KEY}}
+  password: ${PARCEL_PASSWORD}

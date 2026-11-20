@@ -1,0 +1,8 @@
+[
+  {"id":"ollama","label":"Ollama · локально","protocol":"ollama","url":"http://127.0.0.1:11434","model":"qwen2.5:1.5b"},
+  {"id":"openai","label":"OpenAI","protocol":"chat","url":"https://api.openai.com/v1","key_env":"OPENAI_API_KEY","model":"gpt-6.2-sol"},
+  {"id":"anthropic","label":"Anthropic Claude","protocol":"anthropic","url":"https://api.anthropic.com/v1","key_env":"ANTHROPIC_API_KEY","model":""},
+  {"id":"gigachat","label":"GigaChat","protocol":"gigachat","url":"https://api.giga.chat/v1","key_env":"GIGACHAT_CREDENTIALS","model":"GigaChat"},
+  {"id":"yandex","label":"Yandex AI Studio","protocol":"chat","url":"https://ai.api.cloud.yandex.net/v1","key_env":"YANDEX_API_KEY","project_env":"YANDEX_FOLDER_ID","auth_scheme":"Api-Key","model":""},
+  {"id":"vllm","label":"vLLM · локально","protocol":"chat","url":"http://127.0.0.1:8080/v1","model":""}
+]

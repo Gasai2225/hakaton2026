@@ -1,0 +1,201 @@
+{
+  "findings": [
+    {
+      "category": "SECRET",
+      "path": "desk/src/main/kotlin/ledger/dispatch/Dispatch.kt",
+      "line": 6,
+      "class": "password",
+      "note": "Пароль манифеста задан литералом."
+    },
+    {
+      "category": "SECRET",
+      "path": "desk/src/main/kotlin/ledger/dispatch/Dispatch.kt",
+      "line": 10,
+      "class": "api-key",
+      "note": "Фиксированное значение заголовка ключа API."
+    },
+    {
+      "category": "SECRET",
+      "path": "desk/src/main/resources/application.yml",
+      "line": 5,
+      "class": "configuration-token",
+      "note": "Токен диспетчера в настройках."
+    },
+    {
+      "category": "SECRET",
+      "path": "desk/src/main/kotlin/ledger/dispatch/Dispatch.kt",
+      "line": 7,
+      "class": "secret-fallback",
+      "note": "При отсутствии переменной окружения используется встроенное значение."
+    },
+    {
+      "category": "SECRET",
+      "path": "desk/src/main/kotlin/ledger/dispatch/Dispatch.kt",
+      "line": 15,
+      "class": "recoverable-token",
+      "note": "Восстановимый bearer-токен из констант."
+    },
+    {
+      "category": "SAST",
+      "path": "desk/src/main/kotlin/ledger/web/Districts.kt",
+      "line": 14,
+      "class": "sql-injection",
+      "note": "Параметр Spring MVC через локальные переменные попал в текст SQL."
+    },
+    {
+      "category": "SAST",
+      "path": "desk/src/main/kotlin/ledger/dispatch/Carrier.kt",
+      "line": 7,
+      "class": "tls-verification",
+      "note": "Проверка имени узла принимает любое значение."
+    },
+    {
+      "category": "SAST",
+      "path": "desk/src/main/kotlin/ledger/web/Access.kt",
+      "line": 29,
+      "class": "credentialed-cors",
+      "note": "Одна политика разрешает учётные данные и произвольный origin."
+    },
+    {
+      "category": "SAST",
+      "path": "desk/src/main/kotlin/ledger/web/Access.kt",
+      "line": 20,
+      "class": "route-authorization",
+      "note": "Публичный GET предшествует правилу роли для служебной группы."
+    },
+    {
+      "category": "SAST",
+      "path": "desk/src/main/kotlin/ledger/web/Parcels.kt",
+      "line": 10,
+      "class": "object-authorization",
+      "note": "Репозиторий из другого пакета выбирает запись по номеру без проверки владельца."
+    },
+    {
+      "category": "SCA",
+      "path": "desk/build.gradle.kts",
+      "line": 17,
+      "package": "org.apache.commons:commons-text",
+      "version": "1.9",
+      "advisoryId": "CVE-2022-42889",
+      "note": "Первый пакет в bundle."
+    },
+    {
+      "category": "SCA",
+      "path": "desk/build.gradle.kts",
+      "line": 17,
+      "package": "org.jsoup:jsoup",
+      "version": "1.14.1",
+      "advisoryId": "CVE-2021-37714",
+      "note": "Второй пакет на той же строке."
+    },
+    {
+      "category": "SCA",
+      "path": "formats/build.gradle.kts",
+      "line": 6,
+      "package": "org.json:json",
+      "version": "20230227",
+      "advisoryId": "CVE-2023-5072",
+      "note": "Точная версия из lockfile модуля."
+    },
+    {
+      "category": "SCA",
+      "path": "formats/build.gradle.kts",
+      "line": 7,
+      "package": "org.apache.commons:commons-compress",
+      "version": "1.25.0",
+      "advisoryId": "CVE-2024-25710",
+      "note": "Свойство Gradle с переносом строки."
+    },
+    {
+      "category": "SCA",
+      "path": "formats/build.gradle.kts",
+      "line": 8,
+      "package": "commons-net:commons-net",
+      "version": "3.8.0",
+      "advisoryId": "CVE-2021-37533",
+      "note": "Именованная конфигурация через add."
+    }
+  ],
+  "controls": [
+    {
+      "category": "SECRET",
+      "path": "desk/src/main/resources/application.yml",
+      "line": 6,
+      "note": "Вложенная внешняя подстановка без литерала."
+    },
+    {
+      "category": "SECRET",
+      "path": "desk/src/main/resources/application.yml",
+      "line": 7,
+      "note": "Пароль поступает из окружения."
+    },
+    {
+      "category": "SECRET",
+      "path": "desk/src/main/kotlin/ledger/dispatch/Dispatch.kt",
+      "line": 20,
+      "note": "Значение заголовка поступает от вызывающего кода."
+    },
+    {
+      "category": "SECRET",
+      "path": "desk/src/main/kotlin/ledger/dispatch/Dispatch.kt",
+      "line": 24,
+      "note": "Подпись столбца обычной карты, а не значение HTTP-заголовка."
+    },
+    {
+      "category": "SAST",
+      "path": "desk/src/main/kotlin/ledger/web/Districts.kt",
+      "line": 19,
+      "note": "Именованный параметр передан через param."
+    },
+    {
+      "category": "SAST",
+      "path": "desk/src/main/kotlin/ledger/web/Parcels.kt",
+      "line": 13,
+      "note": "Запрос ограничен номером и текущим владельцем."
+    },
+    {
+      "category": "SAST",
+      "path": "desk/src/main/kotlin/ledger/web/Access.kt",
+      "line": 19,
+      "note": "Публичный путь вне служебной группы."
+    },
+    {
+      "category": "SAST",
+      "path": "desk/src/main/kotlin/ledger/web/Access.kt",
+      "line": 33,
+      "note": "Точный origin на отдельном объекте CORS."
+    },
+    {
+      "category": "SAST",
+      "path": "desk/src/main/kotlin/ledger/dispatch/Carrier.kt",
+      "line": 11,
+      "note": "Штатная проверка имени."
+    },
+    {
+      "category": "SCA",
+      "path": "desk/build.gradle.kts",
+      "line": 18,
+      "package": "commons-net:commons-net",
+      "version": "3.9.0",
+      "status": "checked",
+      "note": "Свойство с двоеточием перекрывает уязвимое значение по умолчанию."
+    },
+    {
+      "category": "SCA",
+      "path": "formats/build.gradle.kts",
+      "line": 9,
+      "package": "org.jsoup:jsoup",
+      "version": "1.14.2",
+      "status": "checked",
+      "note": "Исправленная версия в независимом модуле."
+    },
+    {
+      "category": "SCA",
+      "path": "gradle/libs.versions.toml",
+      "line": 8,
+      "package": "org.yaml:snakeyaml",
+      "status": "undeclared",
+      "note": "Неиспользованный элемент каталога не является зависимостью."
+    }
+  ]
+}

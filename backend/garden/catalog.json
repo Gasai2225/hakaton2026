@@ -1,0 +1,9 @@
+[
+  {
+    "package": "training.demo:example-lib",
+    "advisory": "DEMO-001",
+    "introduced": "1.0",
+    "fixed": "1.2",
+    "severity": "medium"
+  }
+]

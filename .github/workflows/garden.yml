@@ -1,0 +1,39 @@
+name: Garden security checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: TBagirov/training
+          ref: fe1fcbe212669783480666b9b60147c8a8c6eef4
+          path: samples/training
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r backend/requirements.txt
+      - name: Verify Repair Desk and synthetic controls
+        working-directory: backend
+        run: python -m unittest discover -s tests
+      - name: Export the organizer's reference project
+        working-directory: backend
+        run: |
+          status=0
+          python -m garden.ci --project ../samples/training/training-project --output ../garden-report.json || status=$?
+          # The reference deliberately includes a critical dependency.
+          test "$status" -eq 1
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('garden-report.json') != ''
+        with:
+          name: garden-findings
+          path: garden-report.json

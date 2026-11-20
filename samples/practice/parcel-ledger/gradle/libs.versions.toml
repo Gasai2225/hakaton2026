@@ -1,0 +1,11 @@
+[versions]
+text = "1.9"
+markup = "1.14.1"
+
+[libraries]
+parcel-text = { module = "org.apache.commons:commons-text", version.ref = "text" }
+parcel-html = { module = "org.jsoup:jsoup", version.ref = "markup" }
+unused-yaml = { module = "org.yaml:snakeyaml", version = "1.33" }
+
+[bundles]
+documents = ["parcel-text", "parcel-html"]
