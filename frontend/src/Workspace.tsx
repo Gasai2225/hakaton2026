@@ -1,11 +1,16 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react'
 import { ArrowRight, GitFork, LayoutGrid, LogOut, UserRound } from 'lucide-react'
 import { ApiError, message, request } from './api'
 import { CatalogPage } from './CatalogPage'
+import { reportRoute } from './browserReportLinks'
 import { AccessPage, ProjectsPage } from './ProjectPages'
 import { projectUrl, useAction, useResource, type Account, type Project } from './workspaceData'
 import s from './workspace.module.css'
 export type { Account } from './workspaceData'
+
+const NotificationSettings = lazy(() => import('./NotificationSettings'))
+const BrowserReportPage = lazy(() => import('./BrowserReportPage'))
+const BrowserNotification = lazy(() => import('./BrowserNotification'))
 
 const path = window.location.pathname.replace(/\/$/, '') || '/'
 const query = new URLSearchParams(window.location.search)
@@ -17,7 +22,7 @@ const local = ['127.0.0.1', 'localhost', '[::1]'].includes(window.location.hostn
 const authRoute = path === '/register' || path === '/login'
 
 function safeDestination(value: string | null) {
-  if (value && (projectRoute.test(value) || ['/templates', '/profile', '/projects'].includes(value)
+  if (value && (projectRoute.test(value) || reportRoute.test(value) || ['/templates', '/profile', '/projects'].includes(value)
     || /^\/#invite=[A-Za-z0-9_-]{8,256}$/.test(value))) return value
   return '/projects'
 }
@@ -111,7 +116,11 @@ function ProfilePage({ user, update }: { user: Account; update: (v: Account) => 
           await request<void>('auth/logout', 'POST'); sessionStorage.removeItem(pendingKey); window.location.replace('/login')
         })}><LogOut size={15}/>Выйти</button></div>
       {action.error && <p role="alert" className={s.error}>{action.error}</p>}
-    </section></main>
+    </section>
+    <Suspense fallback={<p role="status">Загрузка настроек уведомлений…</p>}>
+      <NotificationSettings email={user.email}/>
+    </Suspense>
+  </main>
 }
 
 function InvitePage({ user, token }: { user: Account; token: string }) {
@@ -152,6 +161,7 @@ export function Workspace({ renderEditor }: { renderEditor: (projectId: string, 
     return () => { controller.abort(); window.removeEventListener('hashchange', refresh) }
   }, [retry])
   const project = projectRoute.exec(path)
+  const report = reportRoute.exec(path)
   let page: ReactNode
   if (error) page = <main className={s.narrow}><div role="alert" className={s.panel}>{error}{' '}
     <button onClick={() => { setError(''); setRetry(n => n + 1) }}>Повторить</button></div></main>
@@ -159,10 +169,15 @@ export function Workspace({ renderEditor }: { renderEditor: (projectId: string, 
   else if (!user) page = <AuthForm register={path === '/register'}/>
   else if (invite) page = <InvitePage user={user} token={invite}/>
   else if (project?.[2]) page = <AccessPage id={project[1]}/>
-  else if (project) return renderEditor(project[1], user)
+  else if (project) return <>{renderEditor(project[1], user)}<Suspense fallback={null}><BrowserNotification/></Suspense></>
+  else if (report) page = <Suspense fallback={<p role="status">Загружаем отчёт…</p>}>
+    <BrowserReportPage runId={report[1]} nodeId={report[2]}/>
+  </Suspense>
   else if (path === '/templates') page = <CatalogPage/>
   else if (path === '/profile') page = <ProfilePage user={user} update={setUser}/>
   else if (path === '/' || path === '/projects') page = <ProjectsPage/>
   else page = <main className={s.narrow}><h1>Страница не найдена</h1><a href="/projects">К проектам</a></main>
-  return <div className={s.workspace}><Header user={user ?? undefined}/>{page}</div>
+  return <div className={s.workspace}><Header user={user ?? undefined}/>{page}
+    {user && !report && <Suspense fallback={null}><BrowserNotification/></Suspense>}
+  </div>
 }

@@ -184,7 +184,7 @@ class InvitationMailTests(unittest.TestCase):
     def test_configured_tls_mail_contains_fragment_token_and_bound_recipient(self):
         with patch.dict(os.environ, {"GARDEN_SMTP_HOST":"smtp.example.org", "GARDEN_SMTP_FROM":"garden@example.org",
                                      "GARDEN_PUBLIC_ORIGIN":"https://garden.example.org", "GARDEN_SMTP_MODE":"starttls",
-                                     "GARDEN_SMTP_USER":"", "GARDEN_SMTP_PORT":"587"}), patch("garden.projects.smtplib.SMTP") as smtp:
+                                     "GARDEN_SMTP_USER":"", "GARDEN_SMTP_PORT":"587"}), patch("garden.integrations.smtplib.SMTP") as smtp:
             status = projects.send_invitation("member@example.org", "Аудит", "inviteToken")
         self.assertEqual(status, "sent")
         smtp.return_value.starttls.assert_called_once()
@@ -195,5 +195,5 @@ class InvitationMailTests(unittest.TestCase):
     def test_mail_failure_preserves_the_copyable_link(self):
         with patch.dict(os.environ, {"GARDEN_SMTP_HOST":"smtp.example.org", "GARDEN_SMTP_FROM":"garden@example.org",
                                      "GARDEN_PUBLIC_ORIGIN":"https://garden.example.org", "GARDEN_SMTP_MODE":"ssl",
-                                     "GARDEN_SMTP_PORT":"465"}), patch("garden.projects.smtplib.SMTP_SSL", side_effect=OSError):
+                                     "GARDEN_SMTP_PORT":"465"}), patch("garden.integrations.smtplib.SMTP_SSL", side_effect=OSError):
             self.assertEqual(projects.send_invitation("member@example.org", "Аудит", "inviteToken"), "failed")

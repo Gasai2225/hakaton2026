@@ -6,7 +6,7 @@ from pydantic import Field, field_validator
 
 from garden.gradle_catalog import SETTINGS, external_catalogs, version_catalog_name
 from garden.integrations import Gateway
-from garden.models import Blueprint, Edge, Model, Node, Source, Target, Workflow, demo
+from garden.models import Blueprint, Destination, Edge, Model, Node, Source, Target, Workflow, demo
 
 
 class Plan(Model):
@@ -16,7 +16,7 @@ class Plan(Model):
     condition: Literal["always", "any", "critical"]
     explain: bool
     notify: bool
-    destination: Literal["configured", "inbox"] = "configured"
+    destination: Destination = "browser"
 
     @field_validator("checks")
     @classmethod
@@ -151,9 +151,10 @@ async def generate(gateway: Gateway, description: str, target: Target) -> Bluepr
               "запуска по Москве, cron из пяти полей для других расписаний или null без расписания. "
               "condition — always, если пользователь не указал условие; any — при наличии находок, "
               "critical — при критических находках. explain включай только по запросу рекомендаций модели. "
-              "notify включает доставку отчёта; destination — configured для webhook, inbox для локального журнала. "
-              'Пример для «Ежедневно в 08:30 проверь зависимости и отправь отчёт через webhook»: '
+              "notify включает доставку отчёта; destination — browser для окна с отчётом, telegram для Telegram, "
+              "email для почты, inbox для локального журнала. По умолчанию используй browser. "
+              'Пример для «Ежедневно в 08:30 проверь зависимости и покажи уведомление с отчётом»: '
               '{"name":"Проверка зависимостей","checks":["sca"],"schedule":"08:30","condition":"always",'
-              '"explain":false,"notify":true,"destination":"configured"}. Верни только JSON по схеме: ' + str(schema))
+              '"explain":false,"notify":true,"destination":"browser"}. Верни только JSON по схеме: ' + str(schema))
     raw = await gateway.complete(profile, target.model or profile.model, prompt, description, schema, 600)
     return blueprint(Plan.model_validate_json(raw), target)

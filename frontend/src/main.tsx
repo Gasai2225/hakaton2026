@@ -1,4 +1,4 @@
-import { StrictMode, useCallback, useEffect, useState } from 'react'
+import { lazy, StrictMode, Suspense, useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   addEdge, Background, BackgroundVariant, Controls, MarkerType, Panel, ReactFlow, ReactFlowProvider,
@@ -14,9 +14,11 @@ import { SourceDialog } from './SourceDialog'
 import { OpenAIKeyDialog } from './OpenAIKeyDialog'
 import { TemplatesDialog } from './TemplatesDialog'
 import { Workspace } from './Workspace'
+import { reportRoute } from './browserReportLinks'
 import { ProjectPresence } from './ProjectPresence'
 import { useProjectSync, type ProjectDetail } from './useProjectSync'
 import s from './studio.module.css'
+import workspaceStyles from './workspace.module.css'
 
 const markerEnd = { type: MarkerType.ArrowClosed, color: '#659789', width: 15, height: 15 }
 const toFlow = (spec: Spec): FlowNode => ({ id: spec.id, type: 'block', position: { x: spec.x, y: spec.y }, data: { spec } })
@@ -262,6 +264,7 @@ function Studio({ projectId }: { projectId?: string }) {
         </div>
       </section>
       <Inspector node={selected} profiles={profiles} step={shownSteps.find(n => n.node_id === selection)} findings={run?.findings ?? []}
+        sharedProject={Boolean(projectId)}
         runId={runId} inspectedWebhook={inspectedWebhook} closeWebhook={() => setInspectedDelivery(undefined)} update={update} remove={remove}
         downloadCiGraph={downloadCiGraph} connectOpenAI={() => setKeyOpen(true)}/>
     </div>
@@ -291,11 +294,17 @@ function Studio({ projectId }: { projectId?: string }) {
 }
 
 const location = window.location
+const localReport = new URLSearchParams(location.search).get('local') === '1' && reportRoute.exec(location.pathname)
+const BrowserReportPage = lazy(() => import('./BrowserReportPage'))
+const BrowserNotification = lazy(() => import('./BrowserNotification'))
 const legacy = location.pathname === '/local' || (location.pathname === '/' && !location.hash &&
   (new URLSearchParams(location.search).get('tab') === 'history' || new URLSearchParams(location.search).get('connect') === 'openai'))
 function editor(projectId?: string) {
   return <ReactFlowProvider><Studio key={projectId ?? 'local'} projectId={projectId}/></ReactFlowProvider>
 }
 createRoot(document.getElementById('root')!).render(<StrictMode>
-  {legacy ? editor() : <Workspace renderEditor={id => editor(id)} />}
+  {localReport ? <div className={workspaceStyles.workspace}><Suspense fallback={<p role="status">Загружаем отчёт…</p>}>
+    <BrowserReportPage runId={localReport[1]} nodeId={localReport[2]}/>
+  </Suspense></div> : legacy ? <>{editor()}<Suspense fallback={null}><BrowserNotification local/></Suspense></>
+    : <Workspace renderEditor={id => editor(id)} />}
 </StrictMode>)

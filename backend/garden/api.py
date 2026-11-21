@@ -16,10 +16,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import Field, SecretStr, ValidationError
 
 from garden.actions_history import ActionsHistory
-from garden import accounts, account_oauth, projects, catalog
+from garden import accounts, account_oauth, projects, catalog, notifications
 from garden.github_source import GitHubSource, import_github
 from garden.integrations import Gateway
-from garden.models import Blueprint, Id, Model, PublicConnection, Receipt, Run, RunSummary, Source, Target, WebhookDelivery, Workflow
+from garden.models import (Blueprint, BrowserReport, BrowserReportNotice, Id, Model, PublicConnection, Receipt, Run,
+                           RunSummary, Source, Target, WebhookDelivery, Workflow)
 from garden.runner import Engine, reason
 from garden.scenarios import generate, repair_demo, repair_template, sources
 from garden.storage import Store
@@ -93,6 +94,7 @@ async def lifespan(app: FastAPI):
         accounts.init_accounts(store.db)
         projects.init_projects(store.db)
         catalog.init_catalog(store.db)
+        notifications.init_notifications(store.db)
         app.state.actions_history = ActionsHistory(path.parent / "reports")
         app.state.engine = Engine(store, gateway)
         app.state.scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
@@ -116,6 +118,7 @@ app.include_router(accounts.router)
 app.include_router(account_oauth.router)
 app.include_router(projects.router)
 app.include_router(catalog.router)
+app.include_router(notifications.router)
 
 
 @app.middleware("http")
@@ -386,7 +389,8 @@ async def get_run(key: str, request: Request) -> Run:
     return run
 
 
-@app.get("/api/runs/{key}/steps/{node_id}/delivery", response_model=WebhookDelivery)
+@app.get("/api/runs/{key}/steps/{node_id}/delivery", response_model=WebhookDelivery,
+         response_model_exclude={"browser_report"})
 async def webhook_delivery(key: Id, node_id: Id, request: Request):
     run = await get_run(key, request)
     step = next((s for s in run.steps if s.node_id == node_id and s.kind == "webhook"), None)
@@ -396,10 +400,15 @@ async def webhook_delivery(key: Id, node_id: Id, request: Request):
         return WebhookDelivery(state="not_sent")
     db = app.state.store.db
     if step.webhook_attempted is not None:
-        row = db.execute("SELECT body FROM outgoing_webhooks WHERE run_id=? AND node_id=?", (key, node_id)).fetchone()
+        row = db.execute("""SELECT o.body,b.created_at FROM outgoing_webhooks o
+                            LEFT JOIN browser_reports b USING (run_id,node_id)
+                            WHERE o.run_id=? AND o.node_id=?""", (key, node_id)).fetchone()
         if row or step.webhook_attempted:
             state = "delivered" if step.status == "succeeded" else "attempted"
-            return JSONResponse({"state": state, "payload": json.loads(row[0]) if row else None})
+            body = {"state": state, "payload": json.loads(row[0]) if row else None}
+            if row and row[1]:
+                body["browser_report"] = True
+            return JSONResponse(body)
     if step.status in {"pending", "running"}:
         return WebhookDelivery(state="pending")
     if step.webhook_attempted is not None:
@@ -409,6 +418,36 @@ async def webhook_delivery(key: Id, node_id: Id, request: Request):
     if row:
         return JSONResponse({"state": "delivered", "payload": json.loads(row[0])})
     return WebhookDelivery(state="delivered" if step.status == "succeeded" else "unknown")
+
+
+async def browser_report_owner(request: Request, local: bool) -> str | None:
+    if local:
+        await local_studio(request)
+        return None
+    return accounts.current_user(request).id
+
+
+@app.get("/api/browser-reports/next")
+async def next_browser_report(request: Request, local: bool = False) -> BrowserReportNotice | None:
+    owner_id = await browser_report_owner(request, local)
+    return app.state.store.next_browser_report(owner_id)
+
+
+@app.post("/api/browser-reports/{key}/{node_id}/dismiss", status_code=204)
+async def dismiss_browser_report(key: Id, node_id: Id, request: Request, local: bool = False):
+    accounts.check_origin(request)
+    owner_id = await browser_report_owner(request, local)
+    if not app.state.store.dismiss_browser_report(key, node_id, owner_id):
+        raise HTTPException(404, "Уведомление не найдено")
+
+
+@app.get("/api/runs/{key}/steps/{node_id}/report")
+async def browser_report(key: Id, node_id: Id, request: Request) -> BrowserReport:
+    await get_run(key, request)
+    report = app.state.store.browser_report(key, node_id)
+    if report is None:
+        raise HTTPException(404, "Отчёт не найден")
+    return report
 
 
 @app.get("/api/runs/{key}/events", response_class=StreamingResponse)

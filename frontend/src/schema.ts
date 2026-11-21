@@ -508,7 +508,7 @@ export interface components {
              * @default configured
              * @enum {string}
              */
-            destination: "configured" | "inbox";
+            destination: "configured" | "inbox" | "https" | "telegram" | "email" | "browser";
         };
         /** OpenAIKey */
         OpenAIKey: {
@@ -564,6 +564,7 @@ export interface components {
             reports: components["schemas"]["Report"][];
             /** Reviews */
             reviews?: components["schemas"]["Review"][];
+            analysis_status?: "complete" | "partial" | "not_run" | null;
         };
         /** Report */
         Report: {
@@ -734,6 +735,7 @@ export interface components {
              */
             state: "pending" | "attempted" | "delivered" | "not_sent" | "unknown";
             payload?: components["schemas"]["Receipt"] | null;
+            browser_report?: boolean | null;
         };
         /** Workflow */
         Workflow: {

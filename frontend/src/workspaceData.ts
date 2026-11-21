@@ -17,7 +17,7 @@ export function useResource<T>(path: string) {
     }).catch(err => { if (!controller.signal.aborted) setError(message(err)) })
     return () => controller.abort()
   }, [path, version])
-  return { data, error, reload: () => setVersion(v => v + 1) }
+  return { data, setData, error, reload: () => setVersion(v => v + 1) }
 }
 
 export function useAction() {

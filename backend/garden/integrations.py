@@ -1,16 +1,30 @@
+import asyncio
+import ipaddress
 import json
 import os
 import re
+import smtplib
+import socket
+import ssl
 import time
+from collections import Counter
+from collections.abc import Awaitable, Callable
+from contextlib import closing
+from dataclasses import dataclass
+from email.message import EmailMessage
+from functools import partial
+from http.client import HTTPException, HTTPSConnection
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 import httpx
+from cryptography.fernet import Fernet, InvalidToken
 from pydantic import AnyHttpUrl, TypeAdapter
 
+from garden.email_report import build_report_email
 from garden.maven import RELEASE
-from garden.models import ConnectionInfo, Finding, PublicConnection, Receipt, Report
+from garden.models import ConnectionInfo, Destination, Finding, PublicConnection, Receipt, Report
 
 
 class UngroundedAdvice(ValueError):
@@ -246,10 +260,218 @@ def validate_report(raw: str, findings: list[Finding]) -> Report:
     return report
 
 
-def webhook_request(client: httpx.AsyncClient, payload: Receipt, node_id: str, destination: str) -> httpx.Request:
+def required_setting(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise ValueError(f"На сервере не задан {name}")
+    return value
+
+
+def webhook_request(client: httpx.AsyncClient, payload: Receipt, node_id: str, destination: Destination) -> httpx.Request:
     url = (os.environ.get("GARDEN_INBOX_URL", "http://127.0.0.1:8000/api/inbox") if destination == "inbox"
-           else os.environ.get("GARDEN_WEBHOOK_URL"))
+           else required_setting("GARDEN_WEBHOOK_URL"))
     if not url:
-        raise ValueError("На сервере не задан GARDEN_WEBHOOK_URL")
+        raise ValueError("На сервере не задан GARDEN_INBOX_URL")
     return client.build_request("POST", url, headers={"Idempotency-Key": f"{payload.run_id}/{node_id}"},
                                 json=payload.model_dump(), timeout=10)
+
+
+async def send_webhook(client: httpx.AsyncClient, request: httpx.Request) -> str:
+    response = await client.send(request)
+    response.raise_for_status()
+    return f"Отчёт доставлен · HTTP {response.status_code}"
+
+
+def notification_text(payload: Receipt) -> str:
+    counts = Counter(finding.severity for finding in payload.findings)
+    analysis = {"complete": "завершена", "partial": "неполная", "not_run": "не запускалась"}
+    return (f"Garden · прогон {payload.run_id}\n"
+            f"Проверка: {analysis.get(payload.analysis_status, 'статус неизвестен')}\n"
+            f"Находок: {len(payload.findings)} · критических: {counts['critical']} · высоких: {counts['high']}")
+
+
+def post_telegram(token: str, body: bytes) -> None:
+    # The Bot API puts the token in the path. HTTPSConnection does not log request URLs.
+    try:
+        with closing(HTTPSConnection("api.telegram.org", timeout=10)) as connection:
+            connection.request("POST", f"/bot{token}/sendMessage", body, {"Content-Type": "application/json"})
+            with connection.getresponse() as response:
+                if not 200 <= response.status < 300:
+                    raise ValueError(f"Telegram вернул HTTP {response.status}")
+                result = json.loads(response.read())
+    except TimeoutError:
+        raise
+    except (OSError, HTTPException):
+        raise ValueError("Не удалось связаться с Telegram") from None
+    except (json.JSONDecodeError, UnicodeError):
+        raise ValueError("Некорректный ответ Telegram") from None
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise ValueError("Telegram не подтвердил отправку")
+
+
+async def send_telegram(token: str, body: bytes) -> str:
+    await asyncio.to_thread(post_telegram, token, body)
+    return "Уведомление отправлено в Telegram"
+
+
+@dataclass(frozen=True)
+class AccountSMTP:
+    sender: str
+    host: str
+    port: int
+    mode: Literal["ssl", "starttls"]
+    encrypted_password: bytes
+
+
+def smtp_credential_cipher() -> Fernet:
+    try:
+        return Fernet(required_setting("GARDEN_SMTP_CREDENTIAL_KEY"))
+    except ValueError:
+        raise ValueError("Администратор должен задать ключ GARDEN_SMTP_CREDENTIAL_KEY для личной почты") from None
+
+
+def prepare_smtp_send(message: EmailMessage, account: AccountSMTP | None = None) -> Callable[[], None]:
+    if account is not None:
+        try:
+            password = smtp_credential_cipher().decrypt(account.encrypted_password).decode()
+        except InvalidToken:
+            raise ValueError("Не удалось прочитать пароль приложения. Сохраните пароль заново в личном кабинете") from None
+        message["From"] = account.sender
+        return partial(send_smtp_message, message, account.host, account.port, account.mode, account.sender, password,
+                       personal=True)
+    host = required_setting("GARDEN_SMTP_HOST")
+    message["From"] = required_setting("GARDEN_SMTP_FROM")
+    mode = os.getenv("GARDEN_SMTP_MODE", "starttls")
+    if mode not in ("ssl", "starttls"):
+        raise ValueError("В GARDEN_SMTP_MODE укажите starttls или ssl")
+    try:
+        port = int(os.getenv("GARDEN_SMTP_PORT", "465" if mode == "ssl" else "587"))
+    except ValueError:
+        raise ValueError("Укажите корректный порт в GARDEN_SMTP_PORT") from None
+    if not 1 <= port <= 65535:
+        raise ValueError("Укажите корректный порт в GARDEN_SMTP_PORT")
+    user = os.getenv("GARDEN_SMTP_USER")
+    password = os.environ.get("GARDEN_SMTP_PASSWORD") if user else None
+    if user and password is None:
+        raise ValueError("На сервере не задан GARDEN_SMTP_PASSWORD")
+
+    return partial(send_smtp_message, message, host, port, mode, user, password)
+
+
+def send_smtp_message(message: EmailMessage, host: str, port: int, mode: str,
+                      user: str | None, password: str | None, *, personal: bool = False) -> None:
+    context = ssl.create_default_context()
+    if mode == "ssl":
+        smtp_class = PublicSMTPSSL if personal else smtplib.SMTP_SSL
+        smtp = smtp_class(host, port, timeout=8, context=context)
+    else:
+        smtp_class = PublicSMTP if personal else smtplib.SMTP
+        smtp = smtp_class(host, port, timeout=8)
+    with smtp:
+        if mode == "starttls":
+            smtp.starttls(context=context)
+        if user and password is not None:
+            smtp.login(user, password)
+        smtp.send_message(message)
+
+
+async def send_email(send: Callable[[], None]) -> str:
+    try:
+        await asyncio.to_thread(send)
+    except TimeoutError:
+        raise
+    except smtplib.SMTPResponseException as error:
+        raise ValueError(f"SMTP-сервер вернул код {error.smtp_code}") from None
+    except smtplib.SMTPRecipientsRefused:
+        raise ValueError("SMTP-сервер отклонил получателя") from None
+    except OSError:
+        raise ValueError("Не удалось отправить письмо через SMTP") from None
+    return "Отчёт отправлен по email"
+
+
+@dataclass(frozen=True)
+class Notification:
+    receipt: bytes
+    send: Callable[[], Awaitable[str]]
+
+
+@dataclass(frozen=True)
+class Recipients:
+    email: str | None = None
+    telegram: str | None = None
+    smtp: AccountSMTP | None = None
+
+
+def validate_public_host(host: str) -> None:
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return  # Hostnames are resolved and checked at dispatch.
+    require_public_ip(ip)
+
+
+def require_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> None:
+    if isinstance(ip, ipaddress.IPv6Address):
+        # IPv6 transition addresses can route to a different address family.
+        if ip.is_site_local or ip.sixtofour or ip.teredo or ip in ipaddress.IPv6Network("64:ff9b::/96"):
+            raise ValueError("Сервер должен иметь общедоступный IP-адрес")
+        ip = ip.ipv4_mapped or ip
+    if not ip.is_global or ip.is_multicast or ip.is_reserved:
+        raise ValueError("Сервер должен иметь общедоступный IP-адрес")
+
+
+def public_addresses(host: str, port: int) -> list[str]:
+    addresses = list(dict.fromkeys(info[4][0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)))
+    for address in addresses:
+        require_public_ip(ipaddress.ip_address(address))
+    return addresses
+
+
+def public_smtp_socket(host: str, port: int, timeout: float) -> socket.socket:
+    addresses = public_addresses(host, port)
+    deadline = time.monotonic() + timeout
+    for address in addresses:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError
+        try:
+            return socket.create_connection((address, port), timeout=remaining)
+        except OSError:
+            continue
+    raise OSError("Не удалось подключиться к SMTP")
+
+
+class PublicSMTP(smtplib.SMTP):
+    def _get_socket(self, host, port, timeout):
+        return public_smtp_socket(host, port, timeout)
+
+
+class PublicSMTPSSL(smtplib.SMTP_SSL):
+    def _get_socket(self, host, port, timeout):
+        # The connection uses a checked IP but authenticates the configured SMTP hostname.
+        with public_smtp_socket(host, port, timeout) as raw:
+            return self.context.wrap_socket(raw, server_hostname=self._host)
+
+
+def prepare_notification(client: httpx.AsyncClient, payload: Receipt, node_id: str,
+                         destination: Destination, recipients: Recipients | None = None, *,
+                         run_name: str = "Проверка Garden") -> Notification:
+    if destination == "telegram":
+        token = required_setting("GARDEN_TELEGRAM_BOT_TOKEN")
+        if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", token):
+            raise ValueError("Укажите корректный GARDEN_TELEGRAM_BOT_TOKEN")
+        chat = recipients.telegram if recipients is not None else required_setting("GARDEN_TELEGRAM_CHAT_ID")
+        if not chat:
+            raise ValueError("Владелец проекта ещё не подключил Telegram в личном кабинете")
+        chat_id = int(chat) if re.fullmatch(r"-?[0-9]{1,16}", chat) else chat
+        body = json.dumps({"chat_id": chat_id, "text": notification_text(payload)}, ensure_ascii=False).encode()
+        return Notification(payload.model_dump_json().encode(), partial(send_telegram, token, body))
+    if destination == "email":
+        recipient = recipients.email if recipients is not None else required_setting("GARDEN_EMAIL_TO")
+        if not recipient:
+            raise ValueError("Владелец проекта ещё не указал получателя почты в личном кабинете")
+        receipt = payload.model_dump_json().encode()
+        message = build_report_email(payload, recipient, run_name)
+        return Notification(receipt, partial(send_email, prepare_smtp_send(message, recipients.smtp if recipients else None)))
+    request = webhook_request(client, payload, node_id, destination)
+    return Notification(request.content, partial(send_webhook, client, request))

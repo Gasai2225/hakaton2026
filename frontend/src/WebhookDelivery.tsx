@@ -1,17 +1,19 @@
 import { useEffect, useState } from 'react'
 import { message, request, type Delivery } from './api'
 import { labels } from './blocks'
-import { FindingSource } from './Results'
+import { reportHref } from './browserReportLinks'
+import { FindingSource, severity } from './Results'
+import s from './workspace.module.css'
 
 const deliveryStates: Record<Delivery['state'], string> = {
   pending: 'Ожидание отправки',
   attempted: 'Попытка отправки',
-  delivered: 'Запрос доставлен',
-  not_sent: 'Запрос не отправлялся',
+  delivered: 'Доставка подтверждена',
+  not_sent: 'Отправки не было',
   unknown: 'Статус отправки неизвестен',
 }
 
-export function WebhookDelivery({ runId, nodeId }: { runId: string; nodeId: string }) {
+export default function WebhookDelivery({ runId, nodeId, local }: { runId: string; nodeId: string; local: boolean }) {
   const [delivery, setDelivery] = useState<Delivery>()
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
@@ -29,18 +31,27 @@ export function WebhookDelivery({ runId, nodeId }: { runId: string; nodeId: stri
   if (!delivery) return <p role="status">Загрузка отправки…</p>
   const { state, payload } = delivery
   if (!payload) return <div><strong>{deliveryStates[state]}</strong>
-    {['delivered', 'attempted', 'unknown'].includes(state) && <p>Тело запроса отсутствует в истории шага.</p>}</div>
+    {['delivered', 'attempted', 'unknown'].includes(state) && <p>Отчёт отсутствует в истории шага.</p>}</div>
 
+  return <section aria-label="Отчёт уведомления">
+    <strong>{deliveryStates[state]}</strong>
+    {delivery.browser_report && <p><a href={reportHref(runId, nodeId, local)}>Открыть отчёт</a></p>}
+    <ReceiptDetails payload={payload}/>
+  </section>
+}
+
+export function ReceiptDetails({ payload, openFindings = false }: { payload: NonNullable<Delivery['payload']>; openFindings?: boolean }) {
   const findings = new Map(payload.findings.map(f => [f.id, f]))
   const reviews = payload.reviews ?? []
   const withReport = reviews.filter(r => r.report)
-  return <section aria-label="Отправка webhook">
-    <strong>{deliveryStates[state]}</strong>
-    <details><summary>Находки в запросе · {findings.size}</summary>
-      {payload.findings.map(f => <div key={f.id}><b>{f.title}</b><br /><code>{f.category} · {f.rule} · {f.id}</code><br />
-        <FindingSource finding={f} /></div>)}
+  return <>
+    <details open={openFindings || undefined}><summary>Находки · {findings.size}</summary>
+      {payload.findings.map(f => <article key={f.id} className={s.reportFinding}>
+        <strong>{f.title}</strong><br/><small>{severity[f.severity]} · {f.category}</small>
+        <FindingSource finding={f}/><p>{f.fix}</p>
+      </article>)}
     </details>
-    <p>Отчёты моделей в запросе · {payload.reports.length}</p>
+    <p>Отчёты моделей · {payload.reports.length}</p>
     {payload.reports.map((report, i) => {
       const review = withReport[i]
       const model = review && JSON.stringify(review.report) === JSON.stringify(report) ? [review.label, review.model].filter(Boolean).join(' · ') : ''
@@ -58,5 +69,5 @@ export function WebhookDelivery({ runId, nodeId }: { runId: string; nodeId: stri
     })}
     {reviews.filter(r => !r.report).map((r, i) => <p key={i}>{r.label} · {r.model} · {labels[r.status]}
       {r.message && <small> · {r.message}</small>}</p>)}
-  </section>
+  </>
 }

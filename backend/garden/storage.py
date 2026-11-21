@@ -2,7 +2,7 @@ import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
-from garden.models import GitEvent, Run, RunSummary, Workflow, analysis_status_for
+from garden.models import BrowserReport, BrowserReportNotice, GitEvent, Receipt, Run, RunSummary, Workflow, analysis_status_for
 
 
 class Store:
@@ -19,6 +19,10 @@ class Store:
             snapshot TEXT NOT NULL, body TEXT NOT NULL)""")
         self.db.execute("CREATE TABLE IF NOT EXISTS project_runs (run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL)")
         self.db.execute("CREATE INDEX IF NOT EXISTS runs_by_project ON project_runs(project_id)")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS browser_reports (
+            run_id TEXT NOT NULL, node_id TEXT NOT NULL, created_at TEXT NOT NULL,
+            dismissed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (run_id, node_id))""")
+        self.db.execute("CREATE INDEX IF NOT EXISTS browser_reports_pending ON browser_reports(created_at) WHERE dismissed=0")
         if not self.db.execute("SELECT 1 FROM workspace WHERE id=1").fetchone():
             self.db.execute("INSERT INTO workspace VALUES (1, ?)", (initial().model_dump_json(),))
         for (body,) in self.db.execute("SELECT body FROM runs WHERE status='running'").fetchall():
@@ -63,6 +67,46 @@ class Store:
     def record_webhook(self, run_id: str, node_id: str, body: bytes) -> None:
         with self.db:
             self.db.execute("INSERT INTO outgoing_webhooks VALUES (?, ?, ?)", (run_id, node_id, body))
+
+    def record_browser_report(self, payload: Receipt, node_id: str, created_at: str) -> None:
+        with self.db:
+            self.db.execute("INSERT INTO outgoing_webhooks VALUES (?, ?, ?)",
+                            (payload.run_id, node_id, payload.model_dump_json().encode()))
+            self.db.execute("INSERT INTO browser_reports(run_id,node_id,created_at) VALUES (?,?,?)",
+                            (payload.run_id, node_id, created_at))
+
+    def next_browser_report(self, owner_id: str | None) -> BrowserReportNotice | None:
+        row = self.db.execute("""
+            SELECT b.run_id,b.node_id,r.name,b.created_at,pr.project_id FROM browser_reports b
+            JOIN runs r ON r.id=b.run_id LEFT JOIN project_runs pr ON pr.run_id=b.run_id
+            LEFT JOIN projects p ON p.id=pr.project_id
+            WHERE b.dismissed=0 AND (p.owner_id=? OR (? IS NULL AND pr.run_id IS NULL))
+            ORDER BY b.created_at,b.run_id,b.node_id LIMIT 1
+        """, (owner_id, owner_id)).fetchone()
+        if row:
+            return BrowserReportNotice(run_id=row[0], node_id=row[1], name=row[2], created_at=row[3], project_id=row[4])
+        return None
+
+    def browser_report(self, run_id: str, node_id: str) -> BrowserReport | None:
+        row = self.db.execute("""
+            SELECT r.name,b.created_at,pr.project_id,o.body FROM browser_reports b
+            JOIN runs r ON r.id=b.run_id JOIN outgoing_webhooks o USING (run_id,node_id)
+            LEFT JOIN project_runs pr ON pr.run_id=b.run_id WHERE b.run_id=? AND b.node_id=?
+        """, (run_id, node_id)).fetchone()
+        if row:
+            return BrowserReport(run_id=run_id, node_id=node_id, name=row[0], created_at=row[1], project_id=row[2],
+                                 payload=Receipt.model_validate_json(row[3]))
+        return None
+
+    def dismiss_browser_report(self, run_id: str, node_id: str, owner_id: str | None) -> bool:
+        with self.db:
+            result = self.db.execute("""
+                UPDATE browser_reports SET dismissed=1 WHERE run_id=? AND node_id=? AND (
+                    EXISTS (SELECT 1 FROM project_runs pr JOIN projects p ON p.id=pr.project_id
+                            WHERE pr.run_id=browser_reports.run_id AND p.owner_id=?)
+                    OR (? IS NULL AND NOT EXISTS (SELECT 1 FROM project_runs pr WHERE pr.run_id=browser_reports.run_id)))
+            """, (run_id, node_id, owner_id, owner_id))
+            return bool(result.rowcount)
 
     def recent(self, project_id: str | None = None) -> list[RunSummary]:
         rows = self.db.execute("""SELECT id, started, name, status, json_extract(body, '$.git_event')
