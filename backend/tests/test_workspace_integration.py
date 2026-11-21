@@ -9,7 +9,7 @@ from unittest.mock import patch
 import httpx
 
 from garden.api import app, lifespan
-from garden.models import Edge, Node, demo
+from garden.models import Advice, Edge, Node, Report, Step, demo
 
 
 class WorkspaceIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -75,6 +75,10 @@ class WorkspaceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         draft = (await self.other.get(copy_path)).json()
         self.assertEqual(draft["role"], "owner")
         self.assertEqual(draft["workflow"]["files"], [])
+        start = await self.other.post(copy_path + "/runs", json={"trigger": "start", "revision": draft["revision"]})
+        self.assertEqual(start.status_code, 422)
+        self.assertEqual(start.json(), {"code": "missing_sources", "detail": "В проекте нет исходных файлов для проверки."})
+        self.assertEqual((await self.other.get(copy_path + "/runs")).json(), [])
         self.assertFalse(next(n for n in draft["workflow"]["nodes"] if n["kind"] == "schedule")["enabled"])
         self.assertIsNone(app.state.scheduler.get_job(draft["id"]+"/timer"))
         self.assertEqual((await self.owner.get(copy_path)).status_code, 404)
@@ -129,3 +133,41 @@ class WorkspaceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         for endpoint in ("", "/submission", "/submission?format=html", "/steps/hook/delivery", "/receipts"):
             self.assertEqual((await self.owner.get(run_path+endpoint)).status_code, 200)
         self.assertEqual((await self.owner.get(run_path)).json()["status"], "succeeded")
+
+    async def test_run_permission_and_report_only_access_are_scoped_to_the_project(self):
+        project, path, member_id = await self.shared(demo())
+        member = path + "/members/" + member_id
+        start = {"trigger": "start", "revision": project["revision"]}
+        await self.owner.patch(member, json={"role": "editor", "can_run": False})
+        self.assertEqual((await self.editor.post(path + "/runs", json=start)).status_code, 403)
+        await self.owner.patch(member, json={"role": "viewer", "can_run": True})
+        started = await self.editor.post(path + "/runs", json=start)
+        self.assertEqual(started.status_code, 202, started.text)
+        await asyncio.gather(*app.state.engine.tasks)
+        key = started.json()["id"]
+        run_path = "/api/runs/" + key
+        run = app.state.store.run(key)
+        advice = Advice(finding_ids=[run.findings[0].id], risk="Риск из отчёта", fix="Исправление из отчёта")
+        run.steps.append(Step(node_id="private-node-id", kind="explain", status="succeeded",
+                              message="internal execution log", report=Report(groups=[advice])))
+        app.state.store.update(run)
+
+        await self.owner.patch(member, json={"role": "reporter", "can_run": False})
+        self.assertEqual((await self.editor.get(path + "/runs")).json()[0]["id"], key)
+        result = await self.editor.get(run_path + "/report")
+        self.assertEqual(result.status_code, 200, result.text)
+        report = result.json()
+        self.assertEqual(set(report), {"complete", "findings", "reviews"})
+        self.assertEqual(report["reviews"][0]["report"]["groups"], [advice.model_dump()])
+        self.assertNotIn("private-node-id", result.text)
+        self.assertNotIn("internal execution log", result.text)
+        for suffix in ("", "/events", "/steps/private-node-id/delivery", "/receipts"):
+            with self.subTest(suffix=suffix):
+                self.assertEqual((await self.editor.get(run_path + suffix)).status_code, 403)
+        self.assertEqual((await self.editor.get(path + "/connections")).status_code, 403)
+        self.assertEqual((await self.editor.post(path + "/runs", json=start)).status_code, 403)
+        for suffix in ("/report", "/submission", "/submission?format=html"):
+            self.assertEqual((await self.editor.get(run_path + suffix)).status_code, 200)
+            self.assertEqual((await self.other.get(run_path + suffix)).status_code, 404)
+        await self.owner.delete(member)
+        self.assertEqual((await self.editor.get(run_path + "/report")).status_code, 404)

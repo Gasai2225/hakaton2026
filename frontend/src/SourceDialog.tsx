@@ -8,7 +8,7 @@ const attachedCatalog = 'gradle/imported-libs.versions.toml'
 const referencesParentCatalog = (files: Source[]) => files.some(f =>
   ['settings.gradle', 'settings.gradle.kts'].includes(f.path) && /from\s*\(\s*files\s*\(\s*["']\.\.\//.test(f.text))
 
-export function SourceDialog({ files, apply, close }: { files: Source[]; apply: (files: Source[]) => void; close: () => void }) {
+export function SourceDialog({ files, apply, close }: { files: Source[]; apply?: (files: Source[]) => void; close: () => void }) {
   const [draft, setDraft] = useState(files)
   const [index, setIndex] = useState(0)
   const [error, setError] = useState('')
@@ -66,7 +66,7 @@ export function SourceDialog({ files, apply, close }: { files: Source[]; apply: 
   }
   return <dialog ref={dialog} className={s.dialog} onCancel={close} aria-labelledby="source-title">
     <div className={s.dialogHead}><h2 id="source-title">Исходники проекта</h2><button aria-label="Закрыть" onClick={close}><X size={18}/></button></div>
-    <div className={s.fileActions}>
+    {apply && <><div className={s.fileActions}>
       <button onClick={() => picker.current?.click()} disabled={loading}><Upload size={15}/>Выбрать файлы</button>
       <button onClick={() => folder.current?.click()} disabled={loading}><FolderOpen size={15}/>Выбрать папку</button>
       {externalCatalog && <button onClick={() => catalog.current?.click()} disabled={loading}><Upload size={15}/>
@@ -93,13 +93,15 @@ export function SourceDialog({ files, apply, close }: { files: Source[]; apply: 
       <option value="label-studio">Label Studio</option>
       <option value="reading-room">Reading Room</option>
       <option value="parcel-ledger">Parcel Ledger</option>
-    </select></label>
+    </select></label></>}
     {error && <p role="alert">{error}</p>}
-    <label><FileCode2 size={15}/> Файл<select value={index} onChange={e => setIndex(Number(e.target.value))}>
-      {draft.map((file, i) => <option key={file.path} value={i}>{file.path}</option>)}</select></label>
-    <textarea aria-label="Текст учебного файла" spellCheck={false} value={draft[index]?.text ?? ''} onChange={e =>
-      setDraft(draft.map((file, i) => i === index ? { ...file, text: e.target.value } : file))} />
+    {draft.length > 0 ? <>
+      <label><FileCode2 size={15}/> Файл<select value={index} onChange={e => setIndex(Number(e.target.value))}>
+        {draft.map((file, i) => <option key={file.path} value={i}>{file.path}</option>)}</select></label>
+      <textarea aria-label="Текст учебного файла" spellCheck={false} readOnly={!apply} value={draft[index]?.text ?? ''} onChange={e =>
+        setDraft(draft.map((file, i) => i === index ? { ...file, text: e.target.value } : file))} />
+    </> : <p className={s.hint}>{apply ? 'Выберите файлы, папку или готовый учебный проект.' : 'В проекте пока нет исходников.'}</p>}
     <div className={s.dialogFoot}><small>Файлов в проекте · {draft.length}</small>
-      <button className={s.primary} disabled={loading} onClick={() => apply(draft)}>Применить</button></div>
+      {apply && <button className={s.primary} disabled={loading} onClick={() => apply(draft)}>Применить</button>}</div>
   </dialog>
 }

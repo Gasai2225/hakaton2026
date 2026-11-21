@@ -14,9 +14,12 @@ from typing import Annotated, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import Field, StringConstraints, ValidationError, model_validator
 
-from garden.accounts import check_origin, current_user, normalize_email, public_url, rate_limit
+from garden import board_presence
+from garden.accounts import check_origin, current_user, normalize_email, public_url, rate_limit, session_user
+from garden.invitations import InviteToken, find_invitation
 from garden.models import Id, Model, Node, Source, Workflow
 
 
@@ -27,7 +30,9 @@ async def private_response(response: Response) -> None:
 
 router = APIRouter(prefix="/api", dependencies=[Depends(private_response)])
 ProjectName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
-Role = Literal["owner", "editor"]
+MemberRole = Literal["editor", "viewer", "reporter"]
+Role = Literal["owner", "editor", "viewer", "reporter"]
+Permission = Literal["view_reports", "view_graph", "edit", "run"]
 MERGE_HISTORY = 32
 PRESENCE_SECONDS = 35
 
@@ -52,6 +57,7 @@ class ProjectSummary(Model):
     id: str
     name: str
     role: Role
+    can_run: bool
     revision: int
     updated_at: str
 
@@ -69,14 +75,37 @@ class SaveProject(Model):
     base_revision: int = Field(ge=1, le=2**63-1)
     workflow: ProjectGraph
     edit_base: ProjectGraph | None = None
+    client_id: board_presence.ClientId | None = None
+    lease_id: board_presence.ClientId | None = None
 
 
 class Invite(Model):
     email: str = Field(max_length=254)
+    role: MemberRole | None = None
+    can_run: bool | None = Field(default=None, strict=True)
+    reissue_id: Id | None = None
+
+
+class MemberAccess(Model):
+    role: MemberRole
+    can_run: bool = Field(strict=True)
+
+    @model_validator(mode="after")
+    def valid_access(self):
+        if self.role == "reporter" and self.can_run:
+            raise ValueError("Для запуска проверок нужен доступ к графу")
+        return self
 
 
 class AcceptInvite(Model):
-    token: str = Field(min_length=40, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$")
+    token: InviteToken
+
+
+class InvitePreview(Model):
+    status: Literal["pending", "wrong_account", "sign_in", "accepted"]
+    project_name: str | None = None
+    email_hint: str | None = None
+    project_id: str | None = None
 
 
 def init_projects(db: sqlite3.Connection):
@@ -98,35 +127,56 @@ def init_projects(db: sqlite3.Connection):
         CREATE INDEX IF NOT EXISTS presence_expiry ON project_presence(expires_at);
         DELETE FROM project_presence WHERE expires_at <= unixepoch();
     """)
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        columns = {row[1] for row in db.execute("PRAGMA table_info(project_members)")}
+        if "role" not in columns:
+            db.execute("""ALTER TABLE project_members ADD COLUMN role TEXT NOT NULL DEFAULT 'editor'
+                          CHECK(role IN ('editor','viewer','reporter'))""")
+        if "can_run" not in columns:
+            db.execute("""ALTER TABLE project_members ADD COLUMN can_run INTEGER NOT NULL DEFAULT 1
+                          CHECK(can_run IN (0,1) AND (role!='reporter' OR can_run=0))""")
 
 
 def project_query(include_graph: bool) -> str:
-    fields = "p.id,p.name,p.revision,p.updated_at,CASE WHEN p.owner_id=:user THEN 'owner' ELSE 'editor' END"
+    fields = """p.id,p.name,p.revision,p.updated_at,CASE WHEN p.owner_id=:user THEN 'owner' ELSE m.role END,
+                CASE WHEN p.owner_id=:user THEN 1 ELSE m.can_run END"""
     return "SELECT " + fields + (",p.body" if include_graph else "") + """
-        FROM projects p WHERE (p.owner_id=:user OR EXISTS (
-            SELECT 1 FROM project_members m WHERE m.project_id=p.id AND m.account_id=:user))"""
+        FROM projects p LEFT JOIN project_members m ON m.project_id=p.id AND m.account_id=:user
+        WHERE (p.owner_id=:user OR m.id IS NOT NULL)"""
 
 
 def summary(row) -> ProjectSummary:
-    return ProjectSummary(id=row[0], name=row[1], revision=row[2], updated_at=row[3], role=row[4])
+    return ProjectSummary(id=row[0], name=row[1], revision=row[2], updated_at=row[3], role=row[4], can_run=row[5])
 
 
-def accessible_row(request: Request, project_id: str, include_graph: bool = True):
+def accessible_row(request: Request, project_id: str, include_graph: bool, permission: Permission = "view_graph"):
     user = current_user(request)
     row = request.app.state.store.db.execute(project_query(include_graph) + " AND p.id=:id",
                                              {"user": user.id, "id": project_id}).fetchone()
     if not row:
         raise HTTPException(404, "Проект не найден или доступ отозван")
+    if permission == "view_graph" and row[4] == "reporter":
+        raise HTTPException(403, "Вам доступны только отчёты проекта")
+    if permission == "edit" and row[4] not in ("owner", "editor"):
+        raise HTTPException(403, "У вас нет права редактировать этот проект")
+    if permission == "run" and (not row[5] or row[4] == "reporter"):
+        raise HTTPException(403, "У вас нет права запускать проверки проекта")
     return row
 
 
-def require_project(request: Request, project_id: str) -> ProjectDetail:
-    row = accessible_row(request, project_id)
-    return ProjectDetail(**summary(row).model_dump(), workflow=ProjectGraph.model_validate_json(row[5]))
+def require_access(request: Request, project_id: str, permission: Permission = "view_reports") -> ProjectSummary:
+    return summary(accessible_row(request, project_id, False, permission))
+
+
+def require_project(request: Request, project_id: str,
+                    permission: Literal["edit", "run", "view_graph"] = "view_graph") -> ProjectDetail:
+    row = accessible_row(request, project_id, True, permission)
+    return ProjectDetail(**summary(row).model_dump(), workflow=ProjectGraph.model_validate_json(row[6]))
 
 
 def require_owner(request: Request, project_id: str) -> ProjectSummary:
-    project = summary(accessible_row(request, project_id, False))
+    project = require_access(request, project_id)
     if project.role != "owner":
         raise HTTPException(403, "Управлять доступом может только владелец")
     return project
@@ -136,6 +186,29 @@ def schedule(request: Request, project: ProjectDetail):
     callback = getattr(request.app.state, "reschedule_project", None)
     if callback:
         callback(project.id, project.workflow)
+
+
+def team_connections() -> set[str]:
+    return {item.strip() for item in os.environ.get("GARDEN_TEAM_CONNECTIONS", "ollama").split(",") if item.strip()}
+
+
+def ensure_team_targets(workflow: Workflow):
+    allowed = team_connections()
+    if any(target.connection not in allowed for node in workflow.nodes if node.kind == "explain"
+           for target in node.selected_models()):
+        raise HTTPException(422, "Выберите AI-подключение, доступное для совместных проектов")
+
+
+def can_schedule(workflow: Workflow, *, shared: bool = True) -> bool:
+    if not any(node.kind == "schedule" and node.enabled for node in workflow.nodes):
+        return False
+    try:
+        valid = Workflow.model_validate(workflow.model_dump())
+        if shared:
+            ensure_team_targets(valid)
+    except (ValidationError, HTTPException):
+        return False
+    return True
 
 
 @router.get("/projects")
@@ -152,7 +225,7 @@ async def create_project(request: Request, body: NewProject) -> ProjectDetail:
     user = current_user(request)
     graph = (body.workflow.model_copy(update={"name": body.name}) if body.workflow else
              ProjectGraph(name=body.name, nodes=[Node(id="start", kind="manual", x=0, y=0)], edges=[], files=[]))
-    project = ProjectDetail(id=uuid4().hex, name=graph.name, role="owner", revision=1,
+    project = ProjectDetail(id=uuid4().hex, name=graph.name, role="owner", can_run=True, revision=1,
                             updated_at=datetime.now(UTC).isoformat(), workflow=graph)
     db = request.app.state.store.db
     with db:
@@ -162,16 +235,21 @@ async def create_project(request: Request, body: NewProject) -> ProjectDetail:
     return project
 
 
+@router.get("/projects/{project_id}/access")
+async def get_access(request: Request, project_id: Id) -> ProjectSummary:
+    return require_access(request, project_id)
+
+
 @router.get("/projects/{project_id}", response_model=ProjectDetail)
 async def get_project(request: Request, response: Response, project_id: Id):
     # Authorize even conditional requests; a cached revision never confers access.
     row = accessible_row(request, project_id, False)
-    tag = f'"{project_id}-{row[2]}"'
+    tag = f'"{project_id}-{row[2]}-{row[4]}-{int(row[5])}"'
     headers = {"ETag": tag, "Cache-Control": "private, no-cache", "Vary": "Cookie"}
     if request.headers.get("if-none-match") == tag:
         return Response(status_code=304, headers=headers)
     project = require_project(request, project_id)
-    response.headers.update({**headers, "ETag": f'"{project_id}-{project.revision}"'})
+    response.headers.update(headers)
     return project
 
 
@@ -219,7 +297,7 @@ async def update_project(request: Request, project_id: Id, body: SaveProject) ->
     db = request.app.state.store.db
     with db:
         db.execute("BEGIN IMMEDIATE")
-        project = require_project(request, project_id)
+        project = require_project(request, project_id, "edit")
         graph = body.workflow
         if body.edit_base is not None:
             # Typing can continue while the previous PUT is in flight. Its submitted
@@ -231,6 +309,12 @@ async def update_project(request: Request, project_id: Id, body: SaveProject) ->
             if not row:
                 raise HTTPException(409, "Исходная версия устарела. Откройте актуальную версию для сравнения.")
             graph = merge_graph(ProjectGraph.model_validate_json(zlib.decompress(row[0])), graph, project.workflow)
+        if not project.can_run:
+            before, after = ({n.id: n.cron for n in draft.nodes if n.kind == "schedule" and n.enabled}
+                             for draft in (project.workflow, graph))
+            if before != after or (after and can_schedule(graph) and not can_schedule(project.workflow)):
+                raise HTTPException(403, "Для изменения действующего расписания нужно право запуска проверок")
+        edited_lease = board_presence.check_write(request, project_id, body.client_id, project.workflow, graph, body.lease_id)
         if graph == project.workflow:
             return project
         db.execute("INSERT INTO project_versions VALUES(?,?,?)",
@@ -241,21 +325,32 @@ async def update_project(request: Request, project_id: Id, body: SaveProject) ->
                    (graph.name, project.revision, project.updated_at, graph.model_dump_json(), project_id))
         db.execute("DELETE FROM project_versions WHERE project_id=? AND revision<?",
                    (project_id, project.revision - MERGE_HISTORY))
+    board_presence.after_write(request, project_id, graph, edited_lease)
     schedule(request, project)
     return project
 
 
 @router.get("/projects/{project_id}/members")
 async def list_members(request: Request, project_id: Id):
-    accessible_row(request, project_id, False)
+    project = require_access(request, project_id)
+    if project.role not in ("owner", "editor"):
+        raise HTTPException(403, "У вас нет права просматривать список доступов")
     db = request.app.state.store.db
     owner = db.execute("""SELECT a.id,a.email,a.name FROM accounts a
                           JOIN projects p ON p.owner_id=a.id WHERE p.id=?""", (project_id,)).fetchone()
-    members = [{"id": owner[0], "email": owner[1], "name": owner[2], "role": "owner", "status": "active"}]
-    rows = db.execute("""SELECT m.id,m.email,a.name,m.account_id FROM project_members m
+    members = [{"id": owner[0], "email": owner[1], "name": owner[2], "role": "owner", "can_run": True, "status": "active"}]
+    rows = db.execute("""SELECT m.id,m.email,a.name,m.account_id,m.expires_at,substr(m.token_hash,1,24),m.role,m.can_run
+                         FROM project_members m
                          LEFT JOIN accounts a ON m.account_id=a.id WHERE m.project_id=? ORDER BY m.email""", (project_id,))
-    members.extend({"id": ident, "email": email, "name": name or "", "role": "editor",
-                    "status": "active" if account else "pending"} for ident, email, name, account in rows)
+    now = time.time()
+    for ident, email, name, account, expires_at, version, role, can_run in rows:
+        status = "active"
+        if not account:
+            status = "pending" if expires_at and expires_at > now else "expired"
+        member = {"id": ident, "email": email, "name": name or "", "role": role, "can_run": bool(can_run), "status": status}
+        if project.role == "owner" and status == "pending":
+            member["invite_version"] = version
+        members.append(member)
     return members
 
 
@@ -277,6 +372,50 @@ async def project_presence(request: Request, project_id: Id):
     return {"peers": [{"id": account, "name": name} for account, name in rows]}
 
 
+@router.get("/projects/{project_id}/presence/stream", response_class=StreamingResponse)
+async def presence_stream(request: Request, project_id: Id, client_id: board_presence.ClientId):
+    check_origin(request, include_read=True)
+
+    def authorize():
+        accessible_row(request, project_id, False)
+
+    authorize()
+    return board_presence.open_stream(request, project_id, client_id, current_user(request), authorize)
+
+
+@router.post("/projects/{project_id}/presence/cursor", status_code=204)
+async def update_cursor(request: Request, project_id: Id, body: board_presence.CursorUpdate) -> Response:
+    check_origin(request)
+    accessible_row(request, project_id, False)
+    board_presence.move_cursor(request, project_id, body)
+    return Response(status_code=204)
+
+
+@router.post("/projects/{project_id}/presence/lock", status_code=204,
+             responses={200: {"description": "Идентификатор текущей блокировки"}})
+async def set_node_lock(request: Request, project_id: Id, body: board_presence.EditLock) -> Response:
+    check_origin(request)
+    require_access(request, project_id, "edit")
+    if body.node_id is not None:
+        exists = request.app.state.store.db.execute("""
+            SELECT 1 FROM projects p, json_each(p.body,'$.nodes') node
+            WHERE p.id=? AND json_extract(node.value,'$.id')=? LIMIT 1""", (project_id, body.node_id)).fetchone()
+        if not exists:
+            raise HTTPException(404, "Блок уже удалён из проекта")
+    lease_id = board_presence.edit_node(request, project_id, body)
+    if body.return_lease:
+        return JSONResponse({"lease_id": lease_id}, headers={"Cache-Control": "private, no-store"})
+    return Response(status_code=204)
+
+
+@router.post("/projects/{project_id}/presence/lock/activity", status_code=204)
+async def renew_node_lock(request: Request, project_id: Id, body: board_presence.EditActivity) -> Response:
+    check_origin(request)
+    accessible_row(request, project_id, False, "edit")
+    board_presence.edit_activity(request, project_id, body)
+    return Response(status_code=204)
+
+
 def send_invitation(email: str, name: str, token: str) -> str:
     host = os.getenv("GARDEN_SMTP_HOST")
     if not host:
@@ -289,7 +428,7 @@ def send_invitation(email: str, name: str, token: str) -> str:
         message["From"] = os.environ["GARDEN_SMTP_FROM"]
         message["To"] = email
         message["Subject"] = "Garden — приглашение в проект"
-        message.set_content(f"Вас пригласили редактировать проект «{name}». Войдите с адресом {email} "
+        message.set_content(f"Вас пригласили в проект «{name}». Войдите с адресом {email} "
                             f"и примите приглашение в течение семи дней.\n\n{origin}/#invite={token}")
         mode = os.getenv("GARDEN_SMTP_MODE", "starttls")
         if mode not in ("ssl", "starttls"):
@@ -327,35 +466,87 @@ async def invite_member(request: Request, project_id: Id, body: Invite):
         project = require_owner(request, project_id)
         if current_user(request).email == email:
             raise HTTPException(409, "Вы уже владелец проекта")
-        row = db.execute("SELECT id,account_id FROM project_members WHERE project_id=? AND email=?",
+        row = db.execute("SELECT id,account_id,role,can_run FROM project_members WHERE project_id=? AND email=?",
                          (project_id, email)).fetchone()
+        if body.reissue_id is not None and (not row or row[0] != body.reissue_id):
+            raise HTTPException(404, "Это приглашение уже удалено. Обновите список участников")
         if row and row[1]:
             raise HTTPException(409, "Участник уже имеет доступ")
-        member_id = row[0] if row else uuid4().hex
-        db.execute("""INSERT INTO project_members(id,project_id,email,token_hash,expires_at) VALUES(?,?,?,?,?)
+        if row:
+            member_id, role, can_run = row[0], row[2], bool(row[3])
+            if body.reissue_id is None and (
+                (body.role is not None and body.role != role)
+                or (body.can_run is not None and body.can_run != can_run)
+            ):
+                raise HTTPException(409, "Для этой почты уже есть приглашение с другими правами. Выберите «Изменить права» в списке участников.")
+        else:
+            member_id, role = uuid4().hex, body.role or "editor"
+            can_run = role == "editor" if body.can_run is None else body.can_run
+            if role == "reporter" and can_run:
+                raise HTTPException(422, "Для запуска проверок нужен доступ к графу")
+        db.execute("""INSERT INTO project_members(id,project_id,email,token_hash,expires_at,role,can_run) VALUES(?,?,?,?,?,?,?)
                       ON CONFLICT(project_id,email) DO UPDATE SET token_hash=excluded.token_hash,
-                      expires_at=excluded.expires_at""", (member_id, project_id, email, digest, int(time.time())+7*86400))
+                      expires_at=excluded.expires_at""",
+                   (member_id, project_id, email, digest, int(time.time())+7*86400, role, can_run))
     delivery = await asyncio.to_thread(send_invitation, email, project.name, token)
-    return {"id": member_id, "email": email, "token": token, "delivery": delivery}
+    return {"id": member_id, "email": email, "token": token, "delivery": delivery, "invite_version": digest[:24],
+            "role": role, "can_run": can_run}
+
+
+@router.post("/project-invitations/preview", response_model_exclude_none=True)
+async def preview_invite(request: Request, body: AcceptInvite) -> InvitePreview:
+    check_origin(request)
+    invite = find_invitation(request.app.state.store.db, body.token)
+    user = session_user(request)
+    if invite.account_id:
+        if user and invite.account_id == user.id:
+            return InvitePreview(status="accepted", project_name=invite.project_name, project_id=invite.project_id)
+        return InvitePreview(status="wrong_account" if user else "sign_in")
+    mailbox, domain = invite.email.rsplit("@", 1)
+    hint = f"{mailbox[:1] if len(mailbox) > 1 else ''}•••@{domain}"
+    return InvitePreview(status="wrong_account" if user and user.email != invite.email else "pending",
+                         project_name=invite.project_name, email_hint=hint)
 
 
 @router.post("/project-invitations/accept")
-async def accept_invite(request: Request, body: AcceptInvite) -> ProjectDetail:
+async def accept_invite(request: Request, body: AcceptInvite) -> ProjectDetail | ProjectSummary:
     check_origin(request)
     user = current_user(request)
     db = request.app.state.store.db
     with db:
         db.execute("BEGIN IMMEDIATE")
-        row = db.execute("""SELECT id,project_id,email,expires_at FROM project_members
-                            WHERE token_hash=? AND account_id IS NULL""",
-                         (hashlib.sha256(body.token.encode()).hexdigest(),)).fetchone()
-        if not row or row[3] <= time.time():
-            raise HTTPException(404, "Приглашение недействительно или истекло")
-        if row[2] != user.email:
+        invite = find_invitation(db, body.token)
+        if invite.account_id and invite.account_id != user.id:
+            raise HTTPException(404, "Приглашение недоступно для этого аккаунта")
+        if invite.email != user.email:
             raise HTTPException(403, "Войдите с адресом, на который отправлено приглашение")
-        db.execute("UPDATE project_members SET account_id=?,token_hash=NULL,expires_at=NULL WHERE id=?", (user.id, row[0]))
-        project = require_project(request, row[1])
-    return project
+        if invite.account_id is None:
+            db.execute("UPDATE project_members SET account_id=?,expires_at=NULL WHERE id=?", (user.id, invite.member_id))
+        access = require_access(request, invite.project_id)
+        return access if access.role == "reporter" else require_project(request, invite.project_id)
+
+
+@router.patch("/projects/{project_id}/members/{member_id}", status_code=204)
+async def change_member_access(request: Request, project_id: Id, member_id: Id, body: MemberAccess) -> Response:
+    check_origin(request)
+    db = request.app.state.store.db
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        require_owner(request, project_id)
+        row = db.execute("SELECT account_id,role,can_run FROM project_members WHERE project_id=? AND id=?",
+                         (project_id, member_id)).fetchone()
+        if not row:
+            raise HTTPException(404, "Участник или приглашение не найдены")
+        account, old_role, old_run = row
+        if old_role == body.role and bool(old_run) == body.can_run:
+            return Response(status_code=204)
+        db.execute("UPDATE project_members SET role=?,can_run=? WHERE project_id=? AND id=?",
+                   (body.role, body.can_run, project_id, member_id))
+        if account and body.role == "reporter":
+            db.execute("DELETE FROM project_presence WHERE project_id=? AND account_id=?", (project_id, account))
+    if account and (body.role == "reporter" or (old_role == "editor" and body.role != "editor")):
+        board_presence.remove_account(request, project_id, account)
+    return Response(status_code=204)
 
 
 @router.delete("/projects/{project_id}/members/{member_id}", status_code=204)
@@ -370,4 +561,6 @@ async def revoke_member(request: Request, project_id: Id, member_id: Id):
         if not member:
             raise HTTPException(404, "Участник или приглашение не найдены")
         db.execute("DELETE FROM project_presence WHERE project_id=? AND account_id=?", (project_id, member[0]))
+    if member[0]:
+        board_presence.remove_account(request, project_id, member[0])
     return Response(status_code=204)
