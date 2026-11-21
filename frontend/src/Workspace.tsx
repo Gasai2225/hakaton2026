@@ -4,6 +4,8 @@ import { ApiError, message, request } from './api'
 import { CatalogPage } from './CatalogPage'
 import { reportRoute } from './browserReportLinks'
 import { AccessPage, ProjectsPage } from './ProjectPages'
+import { ProjectReportsPage } from './ProjectReportsPage'
+import { authLink, authNavigation, projectRoute } from './authNavigation'
 import { projectUrl, useAction, useResource, type Account, type Project } from './workspaceData'
 import s from './workspace.module.css'
 export type { Account } from './workspaceData'
@@ -12,25 +14,13 @@ const NotificationSettings = lazy(() => import('./NotificationSettings'))
 const BrowserReportPage = lazy(() => import('./BrowserReportPage'))
 const BrowserNotification = lazy(() => import('./BrowserNotification'))
 
-const path = window.location.pathname.replace(/\/$/, '') || '/'
-const query = new URLSearchParams(window.location.search)
-const fragment = new URLSearchParams(window.location.hash.slice(1))
-const invite = fragment.get('invite') || query.get('invite') || path.match(/^\/invite\/([^/]+)$/)?.[1]
 const pendingKey = 'garden.oauth.return'
-const projectRoute = /^\/projects\/([\w-]+)(\/access)?$/
+const { path, query, invite, authRoute, showRegistration, oauthComplete, oauthError, next } =
+  authNavigation(new URL(window.location.href), () => sessionStorage.getItem(pendingKey))
 const local = ['127.0.0.1', 'localhost', '[::1]'].includes(window.location.hostname)
-const authRoute = path === '/register' || path === '/login'
-
-function safeDestination(value: string | null) {
-  if (value && (projectRoute.test(value) || reportRoute.test(value) || ['/templates', '/profile', '/projects'].includes(value)
-    || /^\/#invite=[A-Za-z0-9_-]{8,256}$/.test(value))) return value
-  return '/projects'
-}
 
 function nextPage() {
-  if (invite && /^[A-Za-z0-9_-]{8,256}$/.test(invite)) return '/#invite=' + invite
-  if (query.has('auth_error')) return safeDestination(sessionStorage.getItem(pendingKey))
-  return safeDestination(authRoute ? query.get('next') : path)
+  return next
 }
 
 function resume(destination: string) {
@@ -39,11 +29,6 @@ function resume(destination: string) {
     window.history.replaceState(null, '', target)
     window.location.reload()
   } else window.location.replace(target)
-}
-
-function authLink(route: 'register' | 'login', next: string) {
-  if (next.startsWith('/#invite=')) return '/' + route + next.slice(1)
-  return '/' + route + (next === '/projects' ? '' : '?next=' + encodeURIComponent(next))
 }
 
 function Header({ user }: { user?: Account }) {
@@ -58,29 +43,54 @@ function Header({ user }: { user?: Account }) {
   </div></header>
 }
 
-function AuthForm({ register }: { register: boolean }) {
+type InvitationPreview =
+  | { status: 'pending'; project_name: string; email_hint: string }
+  | { status: 'wrong_account'; project_name?: string; email_hint?: string }
+  | { status: 'sign_in' }
+  | { status: 'accepted'; project_name: string; project_id: string }
+
+function AuthForm({ register, invitation }: { register: boolean; invitation?: InvitationPreview }) {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const providers = useResource<{ id: string; name: string; enabled: boolean }[]>('auth/providers')
   const action = useAction()
   const next = nextPage()
+  const joinToken = register && invitation?.status === 'pending' ? invite : null
+  async function submit() {
+    const credentials = { email: email.trim(), password }
+    let destination = next
+    if (joinToken) {
+      const result = await request<{ project_id: string }>('auth/register-and-join', 'POST',
+        { ...credentials, name: name.trim(), invitation_token: joinToken })
+      destination = projectUrl(result.project_id)
+    } else if (register) {
+      await request('auth/register', 'POST', { ...credentials, name: name.trim() })
+    } else {
+      await request('auth/login', 'POST', credentials)
+    }
+    sessionStorage.removeItem(pendingKey)
+    resume(destination)
+  }
+  const switchMode = <p className={s.authSwitch}>{register ? 'Уже есть аккаунт?' : 'Нет аккаунта?'}{' '}
+    <a href={authLink(register ? 'login' : 'register', next)}>{register ? 'Войти' : 'Зарегистрироваться'}</a></p>
   return <main className={s.narrow}><section className={s.panel}>
     <h1>{register ? 'Регистрация' : 'Вход в Garden'}</h1>
-    {invite && <p className={s.note}>Используйте адрес, на который вас пригласили в проект.</p>}
-    <form className={s.form} onSubmit={e => { e.preventDefault(); void action.perform(async () => {
-      const body = register ? { name: name.trim(), email: email.trim(), password } : { email: email.trim(), password }
-      await request<Account>('auth/' + (register ? 'register' : 'login'), 'POST', body)
-      sessionStorage.removeItem(pendingKey)
-      resume(next)
-    }) }}>
+    {invitation?.status === 'pending' && <p className={s.note}>
+      Вас пригласили в проект <strong>«{invitation.project_name}»</strong>. Используйте почту <strong>{invitation.email_hint}</strong>.
+    </p>}
+    {invitation?.status === 'sign_in' && <p className={s.note}>Войдите в аккаунт, с которого вы приняли приглашение.</p>}
+    {joinToken && switchMode}
+    <form className={s.form} onSubmit={e => { e.preventDefault(); void action.perform(submit) }}>
       {register && <label>Имя<input autoComplete="name" required maxLength={100} value={name} onChange={e => setName(e.target.value)} /></label>}
       <label>Электронная почта<input type="email" autoComplete="email" required value={email} onChange={e => setEmail(e.target.value)}/></label>
       <label>Пароль<input type="password" autoComplete={register ? 'new-password' : 'current-password'} required minLength={register ? 8 : 1} maxLength={128}
         aria-describedby={register ? 'password-hint' : undefined} value={password} onChange={e => setPassword(e.target.value)}/></label>
       {register && <small id="password-hint">От 8 символов</small>}
       {(action.error || query.get('auth_error')) && <p role="alert" className={s.error}>{action.error || query.get('auth_error')}</p>}
-      <button className={s.primary} disabled={action.busy || (register && !name.trim())}>{register ? 'Создать аккаунт' : 'Войти'}<ArrowRight size={16}/></button>
+      <button className={s.primary} disabled={action.busy || (register && !name.trim())}>
+        {joinToken ? 'Зарегистрироваться и вступить' : register ? 'Создать аккаунт' : 'Войти'}<ArrowRight size={16}/>
+      </button>
     </form>
     {providers.error && <p className={s.note}>Способы быстрого входа временно недоступны.</p>}
     {providers.data && providers.data.length > 0 && <div className={s.social} aria-label="Быстрый вход">
@@ -90,8 +100,7 @@ function AuthForm({ register }: { register: boolean }) {
         : <button type="button" key={provider.id} disabled title="Способ входа ещё не подключён">{provider.name}</button>)}
       {providers.data.some(p => !p.enabled) && <small>Недоступные способы входа ещё не подключены администратором.</small>}
     </div>}
-    <p className={s.authSwitch}>{register ? 'Уже есть аккаунт?' : 'Нет аккаунта?'}{' '}
-      <a href={authLink(register ? 'login' : 'register', next)}>{register ? 'Войти' : 'Зарегистрироваться'}</a></p>
+    {!joinToken && invitation?.status !== 'sign_in' && switchMode}
     {local && <a href="/local" className={s.localLink}>Локальный редактор</a>}
   </section></main>
 }
@@ -123,21 +132,73 @@ function ProfilePage({ user, update }: { user: Account; update: (v: Account) => 
   </main>
 }
 
-function InvitePage({ user, token }: { user: Account; token: string }) {
+function InvitePage({ user, token }: { user: Account | null; token: string }) {
   const action = useAction()
+  const [preview, setPreview] = useState<InvitationPreview>()
+  const [problem, setProblem] = useState<{ text: string; invalid: boolean }>()
+  const [version, setVersion] = useState(0)
+  useEffect(() => {
+    const controller = new AbortController()
+    setPreview(undefined); setProblem(undefined)
+    request<InvitationPreview>('project-invitations/preview', 'POST', { token }, controller.signal)
+      .then(result => { if (!controller.signal.aborted) setPreview(result) })
+      .catch(err => {
+        if (controller.signal.aborted) return
+        const invalid = err instanceof ApiError && [404, 422].includes(err.status)
+        setProblem({ invalid, text: invalid ? 'Ссылка больше не действует. Попросите владельца проекта прислать новую.' : message(err) })
+      })
+    return () => controller.abort()
+  }, [token, user?.id, version])
+  if (preview && (!user || preview.status === 'sign_in'))
+    return <AuthForm register={showRegistration && preview.status === 'pending'} invitation={preview}/>
   return <main className={s.narrow}><section className={s.panel}><h1>Приглашение в проект</h1>
-    <p className={s.note}>Вы вошли как <strong>{user.email}</strong>. После принятия приглашения вы сможете редактировать граф вместе с командой.</p>
+    {!preview && !problem && <p role="status">Проверяем приглашение…</p>}
+    {problem && <div><p className={s.error} role="alert">{problem.text}</p>
+      {problem.invalid ? <a href="/projects">К моим проектам</a>
+        : <button onClick={() => setVersion(n => n + 1)}>Повторить</button>}</div>}
+    {user && preview?.status === 'accepted' && <>
+      <p>У вас уже есть доступ к проекту «{preview.project_name}».</p>
+      <a className={s.button} href={projectUrl(preview.project_id)}>Открыть проект</a>
+    </>}
+    {user && preview && (preview.status === 'pending' || preview.status === 'wrong_account') && <>
+    {preview.project_name && <h2>{preview.project_name}</h2>}
+    {preview.status === 'wrong_account'
+      ? <p>Вы вошли как <strong>{user.email}</strong>. Для этого приглашения войдите {preview.email_hint
+        ? <>с почтой <strong>{preview.email_hint}</strong></> : 'в аккаунт участника'}.</p>
+      : <p>Приглашение для <strong>{user.email}</strong>.</p>}
     {action.error && <p role="alert" className={s.error}>{action.error}</p>}
-    <div className={s.actions}><button className={s.primary} disabled={action.busy} onClick={() => void action.perform(async () => {
-      const project = await request<Project>('project-invitations/accept', 'POST', { token })
-      window.location.replace(projectUrl(project.id))
-    })}>Принять приглашение</button>
+    <div className={s.actions}>{preview.status === 'pending' && <button className={s.primary} disabled={action.busy} onClick={() => void action.perform(async () => {
+      try {
+        const project = await request<Project>('project-invitations/accept', 'POST', { token })
+        window.location.replace(projectUrl(project.id))
+      } catch (err) {
+        if (err instanceof ApiError && [401, 403, 404].includes(err.status)) window.location.reload()
+        else throw err
+      }
+    })}>Принять приглашение</button>}
     <button disabled={action.busy} onClick={() => void action.perform(async () => {
       await request<void>('auth/logout', 'POST'); window.location.replace(authLink('login', nextPage()))
-    })}>Сменить аккаунт</button></div></section></main>
+    })}>Сменить аккаунт</button></div></>}
+  </section></main>
 }
 
-export function Workspace({ renderEditor }: { renderEditor: (projectId: string, user: Account) => ReactNode }) {
+type RenderEditor = (project: Project, user: Account) => ReactNode
+
+function ProjectPage({ id, accessPage, user, renderEditor }: {
+  id: string; accessPage: boolean; user: Account; renderEditor: RenderEditor
+}) {
+  const { data, error, denied, reload } = useResource<Project>('projects/' + encodeURIComponent(id) + '/access', 2500)
+  if (data && !accessPage && data.role !== 'reporter') return renderEditor(data, user)
+  let content: ReactNode
+  if (data) content = accessPage && (data.role === 'owner' || data.role === 'editor') ? <AccessPage project={data}/>
+    : data.role === 'reporter' ? <ProjectReportsPage project={data}/>
+    : <main className={s.content}><h1>Управление доступом</h1><p>Доступом управляет владелец проекта.</p><a href={projectUrl(id)}>К проекту</a></main>
+  else content = <main className={s.content}>{denied ? <><h1>Нет доступа к проекту</h1><a href="/projects">Мои проекты</a></>
+    : error ? <p role="alert">{error} <button onClick={reload}>Повторить</button></p> : <p role="status">Загружаем проект…</p>}</main>
+  return <div className={s.workspace}><Header user={user}/>{content}</div>
+}
+
+export function Workspace({ renderEditor }: { renderEditor: RenderEditor }) {
   const [user, setUser] = useState<Account | null>()
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
@@ -147,11 +208,10 @@ export function Workspace({ renderEditor }: { renderEditor: (projectId: string, 
     window.addEventListener('hashchange', refresh)
     request<Account>('auth/me', 'GET', undefined, controller.signal).then(account => {
       if (controller.signal.aborted) return
-      const fromProvider = path === '/' && sessionStorage.getItem(pendingKey)
-      if (fromProvider && !query.has('auth_error')) {
-        sessionStorage.removeItem(pendingKey); resume(safeDestination(fromProvider)); return
+      if (oauthError && !invite) { setUser(null); return }
+      if (oauthComplete || authRoute) {
+        sessionStorage.removeItem(pendingKey); resume(nextPage()); return
       }
-      if (authRoute) { window.location.replace(nextPage()); return }
       setUser(account)
     }).catch(err => {
       if (controller.signal.aborted) return
@@ -162,14 +222,17 @@ export function Workspace({ renderEditor }: { renderEditor: (projectId: string, 
   }, [retry])
   const project = projectRoute.exec(path)
   const report = reportRoute.exec(path)
+  const notification = user && !report && <Suspense fallback={null}><BrowserNotification/></Suspense>
   let page: ReactNode
   if (error) page = <main className={s.narrow}><div role="alert" className={s.panel}>{error}{' '}
     <button onClick={() => { setError(''); setRetry(n => n + 1) }}>Повторить</button></div></main>
   else if (user === undefined) page = <main className={s.narrow}><p role="status">Загружаем личный кабинет…</p></main>
-  else if (!user) page = <AuthForm register={path === '/register'}/>
   else if (invite) page = <InvitePage user={user} token={invite}/>
-  else if (project?.[2]) page = <AccessPage id={project[1]}/>
-  else if (project) return <>{renderEditor(project[1], user)}<Suspense fallback={null}><BrowserNotification/></Suspense></>
+  else if (!user) page = <AuthForm register={showRegistration}/>
+  else if (project) return <>
+    <ProjectPage id={project[1]} accessPage={!!project[2]} user={user} renderEditor={renderEditor}/>
+    {notification}
+  </>
   else if (report) page = <Suspense fallback={<p role="status">Загружаем отчёт…</p>}>
     <BrowserReportPage runId={report[1]} nodeId={report[2]}/>
   </Suspense>
@@ -177,7 +240,5 @@ export function Workspace({ renderEditor }: { renderEditor: (projectId: string, 
   else if (path === '/profile') page = <ProfilePage user={user} update={setUser}/>
   else if (path === '/' || path === '/projects') page = <ProjectsPage/>
   else page = <main className={s.narrow}><h1>Страница не найдена</h1><a href="/projects">К проектам</a></main>
-  return <div className={s.workspace}><Header user={user ?? undefined}/>{page}
-    {user && !report && <Suspense fallback={null}><BrowserNotification/></Suspense>}
-  </div>
+  return <div className={s.workspace}><Header user={user ?? undefined}/>{page}{notification}</div>
 }

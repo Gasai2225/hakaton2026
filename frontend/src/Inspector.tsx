@@ -1,7 +1,8 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Download, Settings2, Trash2 } from 'lucide-react'
 import { blocks, defaultGitEvents, eventNames, labels, Tile } from './blocks'
 import type { Profile, Run, Spec, Step, Target } from './api'
+import type { NodeLock } from './boardPresence'
 import { StepFindings } from './Results'
 import s from './studio.module.css'
 
@@ -13,6 +14,9 @@ type Props = {
   sharedProject: boolean
   downloadCiGraph: () => void
   update: (patch: Partial<Spec>) => void; remove: () => void; connectOpenAI: () => void
+  editing?: { lock?: NodeLock; editable: boolean; pending: boolean; interrupted: boolean; online: boolean; start: () => void; finish: () => void }
+  removeBlocked?: boolean
+  readOnly?: boolean; mayRun?: boolean
 }
 
 const mavenModes = {
@@ -28,6 +32,46 @@ const notificationChannels: Record<Exclude<Spec['destination'], 'https'>, { labe
   email: { label: 'Email', hint: 'Получатель из GARDEN_EMAIL_TO' },
 }
 
+function useSecondsLeft(deadline: number, showFrom = Infinity) {
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    let timer: number
+    function tick() {
+      window.clearTimeout(timer)
+      const time = Date.now()
+      setNow(time)
+      const remaining = deadline - time
+      if (remaining > 0) timer = window.setTimeout(tick,
+        remaining > showFrom ? remaining - showFrom : remaining % 1000 || 1000)
+    }
+    tick()
+    document.addEventListener('visibilitychange', tick)
+    return () => { window.clearTimeout(timer); document.removeEventListener('visibilitychange', tick) }
+  }, [deadline, showFrom])
+  return Math.max(0, Math.ceil((deadline - now) / 1000))
+}
+
+function RemoteLock({ lock }: { lock: NodeLock }) {
+  const seconds = useSecondsLeft(lock.expires_at)
+  const time = Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0')
+  return <><p role="status">Редактирует <strong>{lock.name}</strong></p>
+    <small>{seconds > 0 ? <>Если участник отойдёт, блок освободится через <span role="timer">{time}</span></>
+      : 'Проверяем, свободен ли блок…'}</small></>
+}
+
+export function IdleWarning({ lock, renew }: { lock: NodeLock; renew: () => Promise<void> }) {
+  const seconds = useSecondsLeft(lock.expires_at, 30_000)
+  const [sending, setSending] = useState(false)
+  if (seconds > 30 || !seconds) return null
+  return <div className={s.idleWarning}>
+    <span role="status">Блок скоро освободится.</span> <span role="timer">{seconds} с</span>
+    <button disabled={sending} onClick={async () => {
+      setSending(true)
+      try { await renew() } finally { setSending(false) }
+    }}>Продолжить редактирование</button>
+  </div>
+}
+
 function StepDetails({ step, runId, findings }: Pick<Props, 'runId' | 'findings'> & { step: Step }) {
   return <div className={s.detail}><strong>{labels[step.status]}</strong>{step.message && <p>{step.message}</p>}
     {step.kind === 'webhook' && runId ? <>
@@ -40,7 +84,8 @@ function StepDetails({ step, runId, findings }: Pick<Props, 'runId' | 'findings'
   </div>
 }
 
-export function Inspector({ node, step, profiles, findings, runId, inspectedWebhook, closeWebhook, downloadCiGraph, update, remove, connectOpenAI, sharedProject }: Props) {
+export function Inspector({ node, step, profiles, findings, runId, inspectedWebhook, closeWebhook, downloadCiGraph,
+  update, remove, connectOpenAI, sharedProject, editing, removeBlocked, readOnly, mayRun = true }: Props) {
   if (inspectedWebhook && runId) return <aside className={s.inspector} id="block-inspector" tabIndex={-1}>
     <h2>Доставка уведомления</h2>
     <p className={s.hint}>Прогон <code>{runId}</code><br />Блок <code>{inspectedWebhook.node_id}</code></p>
@@ -57,8 +102,26 @@ export function Inspector({ node, step, profiles, findings, runId, inspectedWebh
     <h2><Settings2 size={16} />Параметры блока</h2>
     {!node ? <p className={s.hint}>Выберите блок на схеме.</p> : <>
       <div className={s.inspectorTitle}><Tile kind={node.kind} /><strong>{blocks[node.kind].name}</strong></div>
-      {['secrets', 'sast', 'sca'].includes(node.kind) && <label>Маска пути<input value={node.pattern}
-        onChange={e => update({ pattern: e.target.value })} placeholder="*.kt" /></label>}
+      {editing && (!readOnly || editing.lock) && <div className={s.editState}>
+        {editing.interrupted && <p role="status">Редактирование прервано. Чтобы продолжить, снова откройте блок.</p>}
+        {editing.lock && (!editing.lock.mine || readOnly)
+          ? <RemoteLock lock={editing.lock} />
+          : editing.lock?.mine
+            ? <button disabled={editing.pending} onClick={editing.finish}>Завершить редактирование</button>
+            : <button disabled={!editing.online || editing.pending} onClick={editing.start}>
+              {editing.pending ? 'Открываем блок…' : editing.online ? 'Редактировать' : 'Ожидаем связь с доской'}</button>}
+      </div>}
+      <fieldset className={s.blockFields} disabled={readOnly || (editing && !editing.editable)}>
+      {['secrets', 'sast', 'sca'].includes(node.kind) && <>
+        <label>Маска пути<input value={node.pattern} aria-describedby="path-pattern-hint"
+          onChange={e => update({ pattern: e.target.value })} placeholder="*" /></label>
+        <small id="path-pattern-hint"><code>*</code> — все поддерживаемые файлы. Разделяйте маски запятыми.
+          {' '}Поставьте <code>!</code> перед маской, чтобы исключить путь.<br />
+          {node.kind === 'sca'
+            ? <><code>build.gradle.kts, app/*</code> — файл сборки в корне и файлы модуля app.</>
+            : <><code>*.kt, *.kts, !**/test/**</code> — файлы Kotlin и Kotlin-скрипты вне папок test.</>}
+        </small>
+      </>}
       {node.kind === 'sca' && <>
         <label>Справочник Maven<select value={mavenMode} aria-describedby="maven-mode-hint"
           onChange={e => {
@@ -83,15 +146,15 @@ export function Inspector({ node, step, profiles, findings, runId, inspectedWebh
         </fieldset>
         <p className={s.hint}>Скачайте граф в <code>samples/ci-workflow.json</code> репозитория с Garden Actions,
           сделайте коммит и push. Результат появится в GitHub Actions и в проверках pull request.</p>
-        <button onClick={downloadCiGraph}><Download size={14} />Скачать ci-workflow.json</button>
         <p className={s.hint}>CI проверяет изменённые учебные проекты. В ветке CI используйте локальную SCA.
           Блоки AI и webhook можно подключить к отдельному ручному триггеру.</p>
       </>}
       {node.kind === 'schedule' && <>
-        <label>Расписание cron<input value={node.cron} onChange={e => update({ cron: e.target.value })} /></label>
+        <label>Расписание cron<input value={node.cron} disabled={!mayRun && node.enabled} onChange={e => update({ cron: e.target.value })} /></label>
         <small>Часовой пояс · Москва</small>
-        <label className={s.checkbox}><input type="checkbox" checked={node.enabled}
+        <label className={s.checkbox}><input type="checkbox" checked={node.enabled} disabled={!mayRun}
           onChange={e => update({ enabled: e.target.checked })} />Включить после сохранения</label>
+        {!mayRun && !readOnly && <small>Для управления действующим расписанием нужно право запуска проверок.</small>}
       </>}
       {node.kind === 'condition' && <>
         <label>Проверка<select value={node.predicate} onChange={e => {
@@ -131,8 +194,11 @@ export function Inspector({ node, step, profiles, findings, runId, inspectedWebh
         {!['inbox', 'browser'].includes(destination) && <small>{sharedProject
           ? 'Получателя задаёт владелец проекта в разделе «Уведомления» личного кабинета.'
           : notificationChannels[destination].hint}</small>}</label>}
-      {step && <StepDetails step={step} runId={runId} findings={findings}/>}
-      <button className={s.delete} onClick={remove}><Trash2 size={14} />Удалить блок</button>
+      </fieldset>
+      {node.kind === 'git_event' && <button onClick={downloadCiGraph}><Download size={14} />Скачать ci-workflow.json</button>}
+      {step && <StepDetails step={step} runId={runId} findings={findings} />}
+      {!readOnly && <button className={s.delete} onClick={remove} disabled={removeBlocked || (editing && !editing.editable) || (!mayRun && node.kind === 'schedule' && node.enabled)}
+        title={removeBlocked ? 'У связанного блока сейчас есть редактор' : undefined}><Trash2 size={14} />Удалить блок</button>}
     </>}
   </aside>
 }

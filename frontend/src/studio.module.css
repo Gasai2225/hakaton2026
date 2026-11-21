@@ -28,13 +28,34 @@
 .brand { display: flex; gap: 10px; align-items: center; font-weight: 650; font-size: 22px; letter-spacing: -.8px; color: white }
 .brand > span { display: grid; place-items: center; width: 31px; height: 31px; border-radius: 9px; background: #c9e99f; color: #234431 }
 .divider { height: 20px; width: 1px; background: #406052 }
-.local { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 12px }
+.headerActions { margin-left: auto; display: flex; align-items: center; gap: 14px }
+.local { display: flex; align-items: center; gap: 8px; font-size: 12px; color: inherit }
 .local i, .nodeStatus i { width: 7px; height: 7px; border-radius: 100%; background: #aad69a }
 .workspaceHead { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 24px 0 23px }
 .crumb { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; margin-bottom: 5px }
 .workspaceHead h1 { font-size: clamp(23px, 2.4vw, 34px); letter-spacing: -1.05px; line-height: 1.18; font-weight: 650 }
 .controls, .fileActions, .dialogFoot { display: flex; align-items: center; gap: 8px }
 .controls button { min-height: 38px }
+.presence { position: relative }
+.rosterButton { gap: 6px; white-space: nowrap; padding: 4px 8px 4px 5px; color: #f0f6f2; background: #23483c; border-color: #54766a }
+.rosterButton:hover:enabled { background: #2f5649; border-color: #7b9d8e }
+.avatars { display: inline-flex; align-items: center }
+.avatar, .extraPeers { display: inline-grid; place-items: center; flex: none; width: 27px; height: 27px; border-radius: 50%;
+  border: 2px solid white; color: white; font-size: 10px; line-height: 1; font-weight: 700 }
+.avatars > * + * { margin-left: -6px }
+.extraPeers { color: var(--muted); background: #e6ede8 }
+.rosterList { position: absolute; z-index: 20; right: 0; top: calc(100% + 5px); margin: 0; padding: 5px;
+  width: max-content; min-width: 170px; max-width: min(270px, 78vw); max-height: 260px; overflow: auto; list-style: none;
+  background: white; color: #1c2c27; border: 1px solid var(--stroke); border-radius: 8px; box-shadow: 0 6px 24px #203e311c }
+.rosterList li { display: flex; align-items: center; gap: 7px; padding: 4px; font-size: 13px; overflow-wrap: anywhere }
+.rosterList small { margin-left: auto; font-size: 11px; color: var(--muted) }
+.canvas :global(.react-flow__viewport-portal) { z-index: 1002; pointer-events: none }
+.remoteCursor { position: absolute; top: 0; left: 0; pointer-events: none; transition: transform 75ms linear }
+.cursorGlyph { position: relative; transform-origin: top left; white-space: nowrap; user-select: none }
+.cursorGlyph svg { display: block; transform: translate(-3px, -3px); filter: drop-shadow(0 1px 1px #173b3040) }
+.cursorName { position: absolute; top: 15px; left: 14px; max-width: 160px; overflow: hidden; text-overflow: ellipsis;
+  padding: 3px 7px; border-radius: 2px 7px 7px; color: #fff; font: 600 11px/1.35 Inter, "Segoe UI", sans-serif }
+@media (prefers-reduced-motion: reduce) { .remoteCursor { transition: none } }
 .saveState { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; margin-right: 7px }
 .saveState svg { color: #6b8e7c }
 button.primary { color: #fff; background: var(--green); border-color: var(--green); padding-inline: 16px }
@@ -42,6 +63,8 @@ button.primary:hover:enabled { background: #194d39; border-color: #194d39 }
 .workspace { display: grid; grid-template-columns: 215px minmax(0,1fr) var(--inspector-width, 225px); min-height: 435px;
   border: 1px solid var(--stroke); border-radius: 12px; overflow: hidden; background: white }
 .library, .inspector { padding: 18px 15px; min-width: 0 }
+.workspace[data-viewer] { grid-template-columns: minmax(0,1fr) var(--inspector-width, 225px) }
+@media (max-width: 820px) { .workspace[data-viewer] { grid-template-columns: minmax(0,1fr) } }
 .library { border-right: 1px solid var(--stroke) }
 .inspector { border-left: 1px solid var(--stroke) }
 .studio h2 { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 650 }
@@ -73,7 +96,19 @@ button.primary:hover:enabled { background: #194d39; border-color: #194d39 }
   background: #ffffffeb; border: 1px solid var(--stroke); padding: 4px 8px; border-radius: 5px; pointer-events: none }
 .block { width: 188px; position: relative; background: #fff; border: 1px solid #bac9c0; border-radius: 9px;
   box-shadow: 0 3px 8px #253d3010; padding: 13px }
-.block[data-selected=true], :global(.react-flow__node.selected) .block { border-color: #447c61; box-shadow: 0 0 0 2px #c7dcc9 }
+.block[data-selected=true] { border-color: #447c61; outline: 2px solid #287453; outline-offset: 2px }
+.block[data-locked=true] { border-color: var(--editor-color); box-shadow: 0 0 0 1px var(--editor-color) }
+.blockLock { position: absolute; left: -1px; bottom: calc(100% + 1px); max-width: calc(100% + 2px);
+  display: flex; align-items: center; gap: 4px; color: white; background: var(--editor-color);
+  padding: 3px 6px; border-radius: 5px 5px 0 0; font-size: 10px; font-weight: 600 }
+.blockLock svg { flex: none }
+.blockLock span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.blockFields { min-width: 0; border: 0; margin: 0; padding: 0 }
+.editState { margin: 9px 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere }
+.editState button { font-size: 12px }
+.idleWarning { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;
+  padding: 9px 12px; color: #694416; background: #fff5dd; border: 1px solid #e9ce99; border-radius: 7px }
+.idleWarning [role=timer], .editState [role=timer] { font-variant-numeric: tabular-nums }
 .blockBody, .inspectorTitle { display: flex; align-items: center; gap: 8px }
 .blockBody strong, .inspectorTitle strong { font-size: 13px; font-weight: 650 }
 .blockBody small { display: block; font-size: 10px; color: var(--muted); margin-top: 2px }
@@ -178,7 +213,12 @@ button.primary:hover:enabled { background: #194d39; border-color: #194d39 }
 @media (max-width: 580px) {
   .workspaceHead { flex-wrap: wrap; padding-block: 15px }
   .top { gap: 9px }
-  .local { font-size: 0; gap: 0 }
+  .productName, .top .divider { display: none }
+  .headerActions { gap: 8px }
+  .rosterButton { gap: 4px }
+  .avatars > :nth-child(n+2) { display: none }
+  .local span { display: none }
+  .local:has(svg) { padding: 8px }
   .workspace { display: flex; flex-direction: column }
   .library { display: flex; flex-wrap: wrap; gap: 6px; border: 0; border-bottom: 1px solid var(--stroke) }
   .library h2 { width: 100% }

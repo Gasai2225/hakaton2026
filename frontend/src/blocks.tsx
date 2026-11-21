@@ -1,6 +1,8 @@
-import { createContext, useContext } from 'react'
+import { createContext, useContext, type CSSProperties } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
-import { AudioLines, Box, Braces, Clock3, Fingerprint, GitBranch, GitPullRequest, MousePointer2, Radio, type LucideIcon } from 'lucide-react'
+import { AudioLines, Box, Braces, Clock3, Fingerprint, GitBranch, GitPullRequest, LockKeyhole, MousePointer2, Radio, type LucideIcon } from 'lucide-react'
+import type { NodeLock } from './boardPresence'
+import { participantColor } from './participantColor'
 import type { Kind, Run, Spec, Step } from './api'
 import s from './studio.module.css'
 
@@ -23,7 +25,7 @@ export const labels: Record<Run['status'], string> = {
   skipped: 'Пропущен', warning: 'С замечанием',
 }
 export const StepContext = createContext<Step[]>([])
-export type FlowNode = Node<{ spec: Spec }, 'block'>
+export type FlowNode = Node<{ spec: Spec; lock?: NodeLock }, 'block'>
 export const isTrigger = (kind: Kind) => blocks[kind].group === 'Запуск'
 export const defaultGitEvents = ['push', 'pull_request'] as const
 export const eventNames = { push: 'Push', pull_request: 'Pull request' }
@@ -33,20 +35,25 @@ export function Tile({ kind }: { kind: Kind }) {
   return <span className={s.tile} data-group={groups.indexOf(group)}><Icon size={19} strokeWidth={1.8} /></span>
 }
 
-function Block({ id, data, selected }: NodeProps<FlowNode>) {
+function Block({ id, data, selected, isConnectable }: NodeProps<FlowNode>) {
   const { kind } = data.spec
   const info = blocks[kind]
   const step = useContext(StepContext).find(item => item.node_id === id)
-  return <div className={s.block} data-selected={selected} data-state={step?.status}>
-    {!isTrigger(kind) && <Handle type="target" position={Position.Left} />}
+  const lock = data.lock?.mine ? undefined : data.lock
+  const ports = { isConnectable, isConnectableStart: isConnectable, isConnectableEnd: isConnectable }
+  return <div className={s.block} data-selected={selected} data-state={step?.status} data-locked={lock ? true : undefined}
+    style={lock ? { '--editor-color': participantColor(lock.user_id) } as CSSProperties : undefined}>
+    {lock && <span className={s.blockLock} title={'Редактирует ' + lock.name}><LockKeyhole size={11}/>
+      <span>Редактирует {lock.name}</span></span>}
+    {!isTrigger(kind) && <Handle {...ports} type="target" position={Position.Left} />}
     <div className={s.blockBody}><Tile kind={kind} /><div><strong>{info.name}</strong>
       <small>{kind === 'git_event' ? (data.spec.git_events ?? defaultGitEvents).map(e => eventNames[e]).join(' / ') : info.note}</small></div></div>
     {step && <span className={s.nodeStatus} data-state={step.status}><i />{labels[step.status]}</span>}
     {kind === 'condition' ? <>
-      <Handle id="yes" type="source" position={Position.Right} style={{ top: '32%' }} title="Да" />
-      <Handle id="no" type="source" position={Position.Right} style={{ top: '72%' }} title="Нет" />
+      <Handle {...ports} id="yes" type="source" position={Position.Right} style={{ top: '32%' }} title="Да" />
+      <Handle {...ports} id="no" type="source" position={Position.Right} style={{ top: '72%' }} title="Нет" />
       <span className={s.ports}>Да<br />Нет</span>
-    </> : <Handle type="source" position={Position.Right} />}
+    </> : <Handle {...ports} type="source" position={Position.Right} />}
   </div>
 }
 

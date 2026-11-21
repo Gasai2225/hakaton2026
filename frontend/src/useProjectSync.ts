@@ -1,23 +1,28 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ApiError, message, request, type Workflow } from './api'
+import type { Project } from './workspaceData'
 
-export type ProjectDetail = { id: string; revision: number; workflow: Workflow; role: 'owner' | 'editor' }
-type Editor = { snapshot: () => Workflow; apply: (workflow: Workflow) => void; saved: () => void }
+export type ProjectDetail = Project & { workflow: Workflow }
+type Editor = { snapshot: () => Workflow; apply: (workflow: Workflow) => void; saved: () => void; clientId?: () => string | undefined }
 type SyncState = { issue: string; conflict: boolean; forbidden: boolean }
 const clear: SyncState = { issue: '', conflict: false, forbidden: false }
+const projectTag = (detail: ProjectDetail) => '"' + [detail.id, detail.revision, detail.role, Number(detail.can_run)].join('-') + '"'
 
 export function connectProjectSync(id: string, editor: () => Editor, publish: (state: SyncState) => void) {
   const path = 'projects/' + encodeURIComponent(id)
   const controller = new AbortController()
   const { signal } = controller
   let revision = 0
+  let tag = ''
   let generation = 0
   let edits = 0
   let savedEdits = 0
   let rejectedEdits = -1
+  let lockRejected = false
+  let nodeEdit: { serial: number; leaseId: string } | undefined
   let state = clear
   let editBase: Workflow | undefined
-  let pending: { serial: number; workflow: Workflow } | undefined
+  let pending: { serial: number; workflow: Workflow; leaseId?: string } | undefined
   let queue = Promise.resolve()
   let timer: number | undefined
 
@@ -41,12 +46,13 @@ export function connectProjectSync(id: string, editor: () => Editor, publish: (s
   function recordError(error: unknown, serial?: number) {
     if (signal.aborted) return
     const status = error instanceof ApiError ? error.status : 0
-    if ([401, 403, 404].includes(status)) {
+    if (status === 409 || status === 423 || (status === 403 && serial !== undefined)) {
+      pending = undefined
+      lockRejected = status === 423
+      notify({ issue: message(error), conflict: true, forbidden: false })
+    } else if ([401, 403, 404].includes(status)) {
       pending = undefined; editBase = undefined
       notify({ issue: 'Доступ к проекту закрыт. Откройте список доступных проектов.', conflict: false, forbidden: true })
-    } else if (status === 409) {
-      pending = undefined
-      notify({ issue: message(error), conflict: true, forbidden: false })
     } else if (status === 422 && serial !== undefined) {
       pending = undefined
       rejectedEdits = serial
@@ -61,7 +67,7 @@ export function connectProjectSync(id: string, editor: () => Editor, publish: (s
     const initialEdits = edits
     const generationAtStart = generation
     try {
-      const response = await fetch('/api/' + path, { signal, cache: 'no-store', headers: { 'If-None-Match': '"' + id + '-' + revision + '"' } })
+      const response = await fetch('/api/' + path, { signal, cache: 'no-store', headers: { 'If-None-Match': tag } })
       if (response.status !== 304) {
         if (!response.ok) throw new ApiError(response.status, 'Не удалось обновить проект')
         const detail = await response.json() as ProjectDetail
@@ -72,6 +78,7 @@ export function connectProjectSync(id: string, editor: () => Editor, publish: (s
           editor().apply(detail.workflow)
           revision = detail.revision
         }
+        if (detail.revision === revision) tag = projectTag(detail)
       }
       if (generation === generationAtStart && !state.conflict && rejectedEdits !== edits) notify(clear)
     } catch (error) {
@@ -84,15 +91,22 @@ export function connectProjectSync(id: string, editor: () => Editor, publish: (s
     checkActive()
     if (state.conflict || rejectedEdits === edits) throw new Error(state.issue)
     // A lost response may follow a successful commit. Retry the same snapshot first.
-    const sending = pending ?? { serial: edits, workflow: editor().snapshot() }
+    const sending = pending ?? { serial: edits, workflow: editor().snapshot(), leaseId: nodeEdit?.leaseId }
     const generationAtStart = generation
     pending = sending
     try {
-      const detail = await request<ProjectDetail>(path, 'PUT', { base_revision: revision, workflow: sending.workflow, edit_base: editBase }, signal)
+      const identifyTab = editor().clientId
+      const clientId = identifyTab?.()
+      if (identifyTab && !clientId) throw new Error('Дождитесь подключения к доске')
+      const detail = await request<ProjectDetail>(path, 'PUT', {
+        base_revision: revision, workflow: sending.workflow, edit_base: editBase, client_id: clientId, lease_id: sending.leaseId,
+      }, signal)
       checkActive()
       if (generation !== generationAtStart) return
       revision = detail.revision
+      tag = projectTag(detail)
       savedEdits = sending.serial
+      if (nodeEdit && nodeEdit.serial <= savedEdits) nodeEdit = undefined
       pending = undefined
       if (edits === sending.serial) {
         editBase = undefined
@@ -131,20 +145,33 @@ export function connectProjectSync(id: string, editor: () => Editor, publish: (s
       if (detail.id !== id || signal.aborted) return
       generation++
       revision = detail.revision
+      tag = projectTag(detail)
       edits = savedEdits = 0
       rejectedEdits = -1
+      lockRejected = false
+      nodeEdit = undefined
       pending = undefined
       editBase = undefined
       notify(clear)
     },
-    touch() {
+    touch(leaseId?: string) {
       if (!revision || state.forbidden || signal.aborted) return
       if (edits === rejectedEdits) notify(clear)
       edits++
+      if (leaseId) nodeEdit = { serial: edits, leaseId }
     },
-    flush() {
+    flush(recoveredLease?: string) {
       return serialize(async () => {
         checkActive()
+        if (recoveredLease && edits !== savedEdits) {
+          // Explicit reacquisition keeps the original merge base and the local draft.
+          if (nodeEdit) nodeEdit.leaseId = recoveredLease
+          if (pending?.leaseId) pending.leaseId = recoveredLease
+          if (lockRejected) { lockRejected = false; notify(clear) }
+          // A validation error can be corrected once the fields are enabled again.
+          // A content conflict still needs explicit resolution.
+          if (rejectedEdits === edits || state.conflict) return revision
+        }
         if (edits === savedEdits) await pull()
         while (edits !== savedEdits) await save()
         return revision
@@ -171,7 +198,7 @@ export function useProjectSync(projectId: string | undefined, editor: Editor) {
     return () => { connection.stop(); session.current = null }
   }, [projectId])
   const init = useCallback((detail: ProjectDetail) => session.current?.init(detail), [])
-  const touch = useCallback(() => session.current?.touch(), [])
-  const flush = useCallback(() => session.current?.flush() ?? Promise.reject(new Error('Проект закрыт')), [])
+  const touch = useCallback((leaseId?: string) => session.current?.touch(leaseId), [])
+  const flush = useCallback((recoveredLease?: string) => session.current?.flush(recoveredLease) ?? Promise.reject(new Error('Проект закрыт')), [])
   return { ...state, init, touch, flush }
 }

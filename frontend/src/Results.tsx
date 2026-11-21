@@ -22,6 +22,19 @@ export function FindingSource({ finding }: { finding: Findings[number] }) {
   </>
 }
 
+export function FindingsTable({ findings, reviews }: {
+  findings: Findings; reviews?: { has: (id: string) => boolean; open: () => void }
+}) {
+  return <div className={s.lockReport}><table aria-label="Находки"><thead><tr>
+    <th>Категория</th><th>Находка</th><th>Класс или зависимость и место</th><th>Исправление</th><th>Критичность</th>
+  </tr></thead><tbody>{findings.map(f => <tr key={f.id}>
+    <td>{f.category}</td><td><strong>{f.title}</strong><small>{f.rule}</small></td>
+    <td><FindingSource finding={f} /></td><td>{f.fix}
+      {reviews?.has(f.id) && <div><button className={s.reviewLink} onClick={reviews.open}>Посмотреть ответы моделей</button></div>}
+    </td><td>{severity[f.severity]}{f.severity_estimated && <small>Оценка анализатора</small>}</td>
+  </tr>)}</tbody></table></div>
+}
+
 export function StepFindings({ step, findings }: { step: Step; findings: Findings }) {
   const byId = new Map(findings.map(f => [f.id, f]))
   return <>
@@ -92,15 +105,10 @@ export function Results({ run, projectId, tab, setTab, open, inspectWebhook }: {
           <details><summary>Вход {step.input_ids?.length ?? 0} · выход {step.output_ids?.length ?? 0}</summary>
             <StepFindings step={step} findings={findings} />
           </details></div>)}</div>
-          : findings.length ? <div className={s.lockReport}><table aria-label="Находки"><thead><tr>
-            <th>Категория</th><th>Находка</th><th>Класс или зависимость и место</th><th>Исправление</th><th>Критичность</th>
-          </tr></thead><tbody>{findings.map(f => <tr key={f.id}>
-            <td>{f.category}</td><td><strong>{f.title}</strong><small>{f.rule}</small></td>
-            <td><FindingSource finding={f} /></td><td>{f.fix}
-            {reviews.some(r => r.report?.groups.some(g => g.finding_ids.includes(f.id))) &&
-              <div><button className={s.reviewLink} onClick={() => setTab('reviews')}>Посмотреть ответы моделей</button></div>}
-            </td><td>{severity[f.severity]}{f.severity_estimated && <small>Оценка анализатора</small>}</td>
-          </tr>)}</tbody></table></div>
+          : findings.length ? <FindingsTable findings={findings} reviews={{
+            has: id => reviews.some(r => r.report?.groups.some(g => g.finding_ids.includes(id))),
+            open: () => setTab('reviews'),
+          }}/>
           : <Empty title={run.status === 'running' ? 'Проверка выполняется' : run.status === 'failed' ? 'Проверка прервана' : 'Находок нет'}
             text={run.status === 'failed' ? 'Причина указана во вкладке «Ход прогона».' : 'Подробности доступны в ходе прогона.'} />}
       </>}

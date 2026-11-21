@@ -19,8 +19,8 @@ from garden.actions_history import ActionsHistory
 from garden import accounts, account_oauth, projects, catalog, notifications
 from garden.github_source import GitHubSource, import_github
 from garden.integrations import Gateway
-from garden.models import (Blueprint, BrowserReport, BrowserReportNotice, Id, Model, PublicConnection, Receipt, Run,
-                           RunSummary, Source, Target, WebhookDelivery, Workflow)
+from garden.models import (Blueprint, BrowserReport, BrowserReportNotice, Finding, Id, Model, PublicConnection,
+                           Receipt, Report, Run, RunSummary, Source, Target, WebhookDelivery, Workflow)
 from garden.runner import Engine, reason
 from garden.scenarios import generate, repair_demo, repair_template, sources
 from garden.storage import Store
@@ -37,31 +37,14 @@ class ProjectStart(Model):
     revision: int = Field(ge=1)
 
 
-def team_connections() -> set[str]:
-    return {item.strip() for item in os.environ.get("GARDEN_TEAM_CONNECTIONS", "ollama").split(",") if item.strip()}
-
-
-def ensure_team_targets(workflow: Workflow):
-    allowed = team_connections()
-    if any(target.connection not in allowed for node in workflow.nodes if node.kind == "explain"
-           for target in node.selected_models()):
-        raise HTTPException(422, "Выберите AI-подключение, доступное для совместных проектов")
-
-
 def schedules(app: FastAPI, workflow, project_id: str | None = None) -> None:
     scheduler = app.state.scheduler
     prefix = f"{project_id}/" if project_id else ""
     for job in scheduler.get_jobs():
         if (job.id.startswith(prefix) if project_id else "/" not in job.id):
             scheduler.remove_job(job.id)
-    if not any(n.kind == "schedule" and n.enabled for n in workflow.nodes):
+    if not projects.can_schedule(workflow, shared=project_id is not None):
         return
-    try:
-        valid = Workflow.model_validate(workflow.model_dump())
-        if project_id:
-            ensure_team_targets(valid)
-    except (ValidationError, HTTPException):
-        return  # An unfinished project draft may still contain an enabled schedule.
 
     async def scheduled(key: str) -> None:
         if project_id:
@@ -70,7 +53,7 @@ def schedules(app: FastAPI, workflow, project_id: str | None = None) -> None:
                 return
             try:
                 current = Workflow.model_validate_json(row[0])
-                ensure_team_targets(current)
+                projects.ensure_team_targets(current)
             except (ValidationError, HTTPException):
                 return
         else:
@@ -155,8 +138,23 @@ async def studio_user(request: Request) -> None:
 @app.exception_handler(RequestValidationError)
 async def invalid_request(request: Request, error: RequestValidationError):
     # Pydantic errors may include the entire uploaded source as their input.
-    details = [item["msg"].removeprefix("Value error, ") for item in error.errors()]
-    return JSONResponse(status_code=422, content={"detail": " · ".join(details[:3])})
+    details = []
+    missing_sources = False
+    for item in error.errors()[:3]:
+        field = item["loc"][-1] if item["loc"] else None
+        empty = item["type"] in {"too_short", "missing"}
+        if empty and field == "nodes":
+            details.append("В сценарии нет блоков. Добавьте блок запуска.")
+        elif item["type"] == "missing_sources" or (empty and field == "files"):
+            if not details:
+                missing_sources = True
+            details.append("В проекте нет исходных файлов для проверки.")
+        else:
+            details.append(item["msg"].removeprefix("Value error, "))
+    content = {"detail": " · ".join(details)}
+    if missing_sources:
+        content["code"] = "missing_sources"
+    return JSONResponse(status_code=422, content=content)
 
 
 @app.get("/api/workflow", dependencies=[Depends(local_studio)])
@@ -183,29 +181,28 @@ async def connections() -> list[PublicConnection]:
 
 @app.get("/api/projects/{project_id}/connections")
 async def project_connections(project_id: Id, request: Request) -> list[PublicConnection]:
-    projects.accessible_row(request, project_id, False)
+    projects.require_access(request, project_id, "view_graph")
     return [p.public().model_copy(update={"local_key_entry": False}) for p in app.state.engine.gateway.profiles.values()
-            if p.id in team_connections()]
+            if p.id in projects.team_connections()]
 
 
 @app.get("/api/projects/{project_id}/runs")
 async def project_runs(project_id: Id, request: Request) -> list[RunSummary]:
-    projects.accessible_row(request, project_id, False)
+    projects.require_access(request, project_id, "view_reports")
     return app.state.store.recent(project_id)
 
 
 @app.post("/api/projects/{project_id}/runs", status_code=202)
 async def start_project_run(project_id: Id, body: ProjectStart, request: Request) -> Run:
     accounts.check_origin(request)
-    project = projects.require_project(request, project_id)
+    project = projects.require_project(request, project_id, "run")
     if body.revision != project.revision:
         raise HTTPException(409, "Граф изменился перед запуском. Дождитесь синхронизации и повторите.")
     try:
         workflow = Workflow.model_validate(project.workflow.model_dump())
     except ValidationError as exc:
-        raise HTTPException(422, "Проверьте связи и исходники перед запуском. " +
-                            exc.errors(include_input=False)[0]["msg"].removeprefix("Value error, ")) from None
-    ensure_team_targets(workflow)
+        raise RequestValidationError(exc.errors(include_input=False)) from None
+    projects.ensure_team_targets(workflow)
     if not any(n.id == body.trigger and n.kind == "manual" for n in workflow.nodes):
         raise HTTPException(422, "Для запуска по кнопке укажите ручной триггер")
     return app.state.engine.start(workflow, body.trigger, project_id=project_id)
@@ -276,7 +273,7 @@ async def publish_template(graph: TemplateDraft) -> Template:
 
 @app.post("/api/templates/generate", dependencies=[Depends(studio_user)])
 async def generate_template(body: Description, request: Request) -> Blueprint:
-    if not is_local_studio(request) and body.target.connection not in team_connections():
+    if not is_local_studio(request) and body.target.connection not in projects.team_connections():
         raise HTTPException(403, "Это подключение недоступно в совместных проектах")
     try:
         return await generate(app.state.engine.gateway, body.text, body.target)
@@ -315,11 +312,12 @@ async def github_sources(body: GitHubSource) -> list[Source]:
 @app.post("/api/inbox", status_code=201)
 async def receive(body: Receipt, request: Request):
     key = request.headers.get("Idempotency-Key", "")
-    if not is_local_studio(request):
-        # A shared deployment accepts only the exact payload recorded by its engine.
-        # Remain independent of forwarded client IPs and proxy host configuration.
+    db = app.state.store.db
+    project_run = db.execute("SELECT 1 FROM project_runs WHERE run_id=?", (body.run_id,)).fetchone()
+    if project_run or not is_local_studio(request):
+        # Shared projects accept only deliveries already recorded by their engine.
         node_id = key.removeprefix(body.run_id + "/")
-        recorded = app.state.store.db.execute(
+        recorded = db.execute(
             "SELECT body FROM outgoing_webhooks WHERE run_id=? AND node_id=?", (body.run_id, node_id)).fetchone()
         if not recorded or recorded[0] != await request.body():
             raise HTTPException(403, "Неизвестная доставка")
@@ -376,17 +374,52 @@ def ci_reports(run_id: int, attempt: int = 1) -> dict:
     return app.state.actions_history.reports(run_id, attempt)
 
 
-@app.get("/api/runs/{key}")
-async def get_run(key: str, request: Request) -> Run:
+async def authorized_run(key: str, request: Request, permission: Literal["view_graph", "view_reports"]) -> Run:
     owner = app.state.store.db.execute("SELECT project_id FROM project_runs WHERE run_id=?", (key,)).fetchone()
     if owner:
-        projects.accessible_row(request, owner[0], False)
+        projects.require_access(request, owner[0], permission)
     else:
         await local_studio(request)
     run = app.state.store.run(key)
     if run is None:
         raise HTTPException(404, "Прогон не найден")
     return run
+
+
+@app.get("/api/runs/{key}")
+async def get_run(key: str, request: Request) -> Run:
+    return await authorized_run(key, request, "view_graph")
+
+
+class ReportReview(Model):
+    label: str
+    report: Report
+
+
+class RunReport(Model):
+    findings: list[Finding]
+    complete: bool
+    reviews: list[ReportReview]
+
+
+async def finished_report_run(key: str, request: Request) -> Run:
+    run = await authorized_run(key, request, "view_reports")
+    if run.status in {"pending", "running"}:
+        raise HTTPException(409, "Дождитесь завершения прогона")
+    return run
+
+
+@app.get("/api/runs/{key}/report")
+async def run_report(key: str, request: Request) -> RunReport:
+    run = await finished_report_run(key, request)
+    reviews = []
+    for step in run.steps:
+        if step.reviews:
+            reviews.extend(ReportReview(label=f"{review.label} {review.model}".strip(), report=review.report)
+                           for review in step.reviews if review.report is not None)
+        elif step.report is not None:
+            reviews.append(ReportReview(label="Модель", report=step.report))
+    return RunReport(findings=run.findings, complete=run.analysis_complete, reviews=reviews)
 
 
 @app.get("/api/runs/{key}/steps/{node_id}/delivery", response_model=WebhookDelivery,
@@ -443,7 +476,7 @@ async def dismiss_browser_report(key: Id, node_id: Id, request: Request, local: 
 
 @app.get("/api/runs/{key}/steps/{node_id}/report")
 async def browser_report(key: Id, node_id: Id, request: Request) -> BrowserReport:
-    await get_run(key, request)
+    await authorized_run(key, request, "view_reports")
     report = app.state.store.browser_report(key, node_id)
     if report is None:
         raise HTTPException(404, "Отчёт не найден")
@@ -492,9 +525,7 @@ async def events(key: str, request: Request):
 @app.get("/api/runs/{key}/submission", response_class=JSONResponse,
          responses={200: {"content": {"text/html": {"schema": {"type": "string"}}}}})
 async def export_submission(key: str, request: Request, format: Literal["json", "html"] = "json"):
-    run = await get_run(key, request)
-    if run.status == "running":
-        raise HTTPException(409, "Дождитесь завершения прогона")
+    run = await finished_report_run(key, request)
     try:
         data = submission(run.findings)
     except ValueError as error:

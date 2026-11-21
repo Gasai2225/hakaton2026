@@ -160,7 +160,7 @@ async def callback(provider: str, request: Request, code: str = "", state: str =
         except (ValueError, KeyError, TypeError, httpx.HTTPError):
             pass
         else:
-            response = redirect("/")
+            response = redirect("/?auth_complete=1")
             start_session(request, response, user)
             response.delete_cookie(STATE_COOKIE, path="/api/auth/oauth/", secure=cookie_secure(request), httponly=True)
             return response

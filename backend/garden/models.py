@@ -7,6 +7,9 @@ from typing import Annotated, Literal
 import regex
 from apscheduler.triggers.cron import CronTrigger
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
+
+from garden.path_masks import parse_masks
 
 
 Kind = Literal["manual", "schedule", "git_event", "secrets", "sca", "sast", "condition", "explain", "webhook"]
@@ -77,6 +80,8 @@ class Node(Model):
 
     @model_validator(mode="after")
     def valid_settings(self):
+        if self.kind in ANALYZERS:
+            parse_masks(self.pattern)
         if self.online_cve and (self.kind != "sca" or self.extended_sca is False):
             raise ValueError("Онлайн-проверка OSV доступна в расширенном режиме SCA")
         if self.kind == "sca":
@@ -164,7 +169,7 @@ class Workflow(Blueprint):
     def valid_workflow(self):
         super().valid_workflow()
         if not self.files and any(node.kind in ANALYZERS for node in self.nodes):
-            raise ValueError("Добавьте хотя бы один исходный файл для анализа")
+            raise PydanticCustomError("missing_sources", "В проекте нет исходных файлов для проверки.")
         return self
 
     @model_validator(mode="after")

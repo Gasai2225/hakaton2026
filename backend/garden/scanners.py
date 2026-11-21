@@ -4,7 +4,6 @@ import hashlib
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from fnmatch import fnmatchcase
 from pathlib import Path
 
 from tree_sitter import Language, Node as SyntaxNode, Parser
@@ -16,6 +15,7 @@ from garden.kotlin_checks import matcher_conflicts, walk
 from garden.maven import Entry, PackageCheck, check_lock, declared, load_catalog, version
 from garden.models import Finding, Kind, LockReport, Severity, Source
 from garden.ownership import ownership_findings
+from garden.path_masks import matches_any, parse_masks
 from garden.secret_checks import config_secrets, kotlin_secrets, name_class, status_read_fallback
 from garden.spring_cors import cors
 from garden.tls import disabled_tls, unchecked_certificates
@@ -160,7 +160,16 @@ class Analysis:
         return sum(p.status == "checked" or p.osv_status == "checked" for p in self.packages)
 
 
+def select_paths(files: list[Source], pattern: str) -> tuple[list[Source], set[str]]:
+    includes, excludes = parse_masks(pattern)
+    # Unselected sources may supply project context. Explicit exclusions may not.
+    if excludes:
+        files = [file for file in files if not matches_any(file.path, excludes)]
+    return files, {file.path for file in files if matches_any(file.path, includes)}
+
+
 def analyze_maven(files: list[Source], pattern: str, extended: bool | None = None, online_cve: bool = False) -> Analysis:
+    files, selected = select_paths(files, pattern)
     if extended is None:
         extended = os.environ.get("GARDEN_EXTENDED_SCA") == "1"
     extended = extended or online_cve
@@ -175,7 +184,7 @@ def analyze_maven(files: list[Source], pattern: str, extended: bool | None = Non
     by_path = {f.path: f for f in files}
     inputs = {"build.gradle.kts", "gradle.lockfile"} if extended else {"build.gradle.kts"}
     modules = dict.fromkeys(Path(f.path).parent for f in files
-                            if Path(f.path).name in inputs and fnmatchcase(f.path, pattern))
+                            if Path(f.path).name in inputs and f.path in selected)
     for module in modules:
         build = by_path.get((module / "build.gradle.kts").as_posix())
         lock = by_path.get((module / "gradle.lockfile").as_posix())
@@ -188,11 +197,11 @@ def analyze_maven(files: list[Source], pattern: str, extended: bool | None = Non
                 errors.append(f"Ошибка синтаксического разбора Kotlin в {build.path}")
             else:
                 hits = dependency_hits(build, root, data, entries, files, errors, declarations, extended, online_version)
-                if fnmatchcase(build.path, pattern):
+                if build.path in selected:
                     result.findings.extend(hits)
                     result.packages.extend(declarations)
                     result.checked += 1
-            if fnmatchcase(build.path, pattern):
+            if build.path in selected:
                 result.issues.extend(errors)
         if lock and extended:
             classified = build is not None and not errors
@@ -227,13 +236,14 @@ def parses_kotlin(root: SyntaxNode, parser: Parser) -> bool:
 def analyze(kind: Kind, files: list[Source], pattern: str, extended_sca: bool | None = None, online_cve: bool = False) -> Analysis:
     if kind == "sca":
         return analyze_maven(files, pattern, extended_sca, online_cve)
+    files, selected = select_paths(files, pattern)
     parser = Parser(KOTLIN)
     roots = {}
     invalid = set()
     for file in files:
         if not file.path.endswith((".kt", ".kts")):
             continue
-        if kind == "sast" or fnmatchcase(file.path, pattern):
+        if kind == "sast" or file.path in selected:
             root = parser.parse(file.text.encode()).root_node
             if parses_kotlin(root, parser):
                 roots[file.path] = root
@@ -243,13 +253,13 @@ def analyze(kind: Kind, files: list[Source], pattern: str, extended_sca: bool | 
     sql = {}
     if kind == "sast":
         for group, build in source_groups(roots, [f.path for f in files]):
-            if not any(fnmatchcase(path, pattern) for path in group):
+            if selected.isdisjoint(group):
                 continue
             sql.update(sql_findings(group, build))
             readers.update(ownership_findings(group, build))
     result = Analysis()
     for file in files:
-        if not fnmatchcase(file.path, pattern):
+        if file.path not in selected:
             continue
         try:
             if kind in {"sast", "secrets"} and is_compose(file.path):
