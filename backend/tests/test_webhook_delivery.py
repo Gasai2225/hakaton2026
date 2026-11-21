@@ -99,14 +99,14 @@ class WebhookDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertCountEqual([body["findings"] for body in received],
                               [[base.model_dump()], [enriched.model_dump()]])
 
-    async def test_outgoing_body_is_available_during_dispatch_and_after_restart(self):
+    async def test_formatted_outgoing_body_is_available_during_dispatch_and_after_restart(self):
         temp = self.enterContext(tempfile.TemporaryDirectory())
         self.enterContext(patch.dict(os.environ, {"GARDEN_DB": str(Path(temp) / "runs.sqlite"),
                                                    "GARDEN_WEBHOOK_URL": "http://test/receive"}))
         entered, release = asyncio.Event(), asyncio.Event()
         requests = []
         async def receiver(request):
-            requests.append(request.content)
+            requests.append(request)
             entered.set()
             await release.wait()
             return httpx.Response(204)
@@ -122,11 +122,15 @@ class WebhookDeliveryTests(unittest.IsolatedAsyncioTestCase):
                 path = f"/api/runs/{key}/steps/send/delivery"
                 try:
                     await asyncio.wait_for(entered.wait(), 5)
-                    payload = json.loads(requests[0])
+                    request = requests[0]
+                    self.assertEqual(request.headers["Content-Type"], "application/json")
+                    self.assertEqual(request.headers["Idempotency-Key"], f"{key}/send")
+                    self.assertIn(b'\n  "run_id": ', request.content)
+                    payload = json.loads(request.content)
                     self.assertEqual((await api.get(path)).json(), {"state": "attempted", "payload": payload})
                     body, = app.state.store.db.execute("SELECT body FROM outgoing_webhooks WHERE run_id=? AND node_id='send'",
                                                        (key,)).fetchone()
-                    self.assertEqual(body, requests[0])
+                    self.assertEqual(body, request.content)
                 finally:
                     release.set()
                     await asyncio.gather(*app.state.engine.tasks)

@@ -13,7 +13,7 @@ const deliveryStates: Record<Delivery['state'], string> = {
   unknown: 'Статус отправки неизвестен',
 }
 
-export default function WebhookDelivery({ runId, nodeId, local }: { runId: string; nodeId: string; local: boolean }) {
+export default function WebhookDelivery({ runId, nodeId }: { runId: string; nodeId: string }) {
   const [delivery, setDelivery] = useState<Delivery>()
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
@@ -35,17 +35,17 @@ export default function WebhookDelivery({ runId, nodeId, local }: { runId: strin
 
   return <section aria-label="Отчёт уведомления">
     <strong>{deliveryStates[state]}</strong>
-    {delivery.browser_report && <p><a href={reportHref(runId, nodeId, local)}>Открыть отчёт</a></p>}
+    {delivery.browser_report && <p><a href={reportHref(runId, nodeId)}>Открыть отчёт</a></p>}
     <ReceiptDetails payload={payload}/>
   </section>
 }
 
-export function ReceiptDetails({ payload, openFindings = false }: { payload: NonNullable<Delivery['payload']>; openFindings?: boolean }) {
+function ReceiptDetails({ payload }: { payload: NonNullable<Delivery['payload']> }) {
   const findings = new Map(payload.findings.map(f => [f.id, f]))
   const reviews = payload.reviews ?? []
   const withReport = reviews.filter(r => r.report)
   return <>
-    <details open={openFindings || undefined}><summary>Находки · {findings.size}</summary>
+    <details><summary>Находки · {findings.size}</summary>
       {payload.findings.map(f => <article key={f.id} className={s.reportFinding}>
         <strong>{f.title}</strong><br/><small>{severity[f.severity]} · {f.category}</small>
         <FindingSource finding={f}/><p>{f.fix}</p>

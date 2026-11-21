@@ -42,11 +42,8 @@
 .reportPromptActions .reportOpen { color: white; background: #22654b; border-color: #22654b; }
 .reportPromptActions .reportOpen:hover:enabled { background: #194d39; }
 .reportPrompt [role="alert"] { display: block; margin-top: 10px; color: #853c30; }
-.reportPage h1 { margin-bottom: 22px; }
-.reportPage details { margin: 12px 0; }
 .reportFinding { margin-top: 8px; padding: 12px 0; border-top: 1px solid var(--stroke); overflow-wrap: anywhere; }
 .reportFinding p { margin: 5px 0 0; }
-.reportPage > a { display: inline-block; margin-top: 20px; }
 .form, .publish { display: grid; gap: 16px; }
 .workspace label { display: grid; gap: 7px; font-size: 13px; font-weight: 550; }
 .workspace input, .workspace select, .workspace textarea { display: block; width: 100%; background: white; padding: 9px 11px; border: 1px solid #c9d5cd; border-radius: 6px; font-size: 14px; font-weight: 400; }

@@ -12,7 +12,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import Field, SecretStr, ValidationError
 
 from garden.actions_history import ActionsHistory
@@ -448,6 +448,13 @@ async def browser_report(key: Id, node_id: Id, request: Request) -> BrowserRepor
     if report is None:
         raise HTTPException(404, "Отчёт не найден")
     return report
+
+
+@app.get("/api/runs/{key}/steps/{node_id}/report.json", response_class=JSONResponse)
+async def browser_report_json(key: Id, node_id: Id, request: Request) -> Response:
+    report = await browser_report(key, node_id, request)
+    data = {"created_at": report.created_at, **report.payload.model_dump(mode="json")}
+    return Response(json.dumps(data, ensure_ascii=False, indent=2) + "\n", media_type="application/json")
 
 
 @app.get("/api/runs/{key}/events", response_class=StreamingResponse)

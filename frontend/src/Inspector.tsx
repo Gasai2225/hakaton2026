@@ -28,13 +28,13 @@ const notificationChannels: Record<Exclude<Spec['destination'], 'https'>, { labe
   email: { label: 'Email', hint: 'Получатель из GARDEN_EMAIL_TO' },
 }
 
-function StepDetails({ step, runId, findings, sharedProject }: Pick<Props, 'runId' | 'findings' | 'sharedProject'> & { step: Step }) {
+function StepDetails({ step, runId, findings }: Pick<Props, 'runId' | 'findings'> & { step: Step }) {
   return <div className={s.detail}><strong>{labels[step.status]}</strong>{step.message && <p>{step.message}</p>}
     {step.kind === 'webhook' && runId ? <>
       <small>На входе · {step.input_ids?.length ?? 0} · на выходе · {step.output_ids?.length ?? 0}</small>
       <Suspense fallback={<p role="status">Загрузка отправки…</p>}>
         <WebhookDelivery key={[runId, step.node_id, step.status, step.webhook_attempted === true].join('/')}
-          runId={runId} nodeId={step.node_id} local={!sharedProject}/>
+          runId={runId} nodeId={step.node_id}/>
       </Suspense>
     </> : <StepFindings step={step} findings={findings} />}
   </div>
@@ -44,7 +44,7 @@ export function Inspector({ node, step, profiles, findings, runId, inspectedWebh
   if (inspectedWebhook && runId) return <aside className={s.inspector} id="block-inspector" tabIndex={-1}>
     <h2>Доставка уведомления</h2>
     <p className={s.hint}>Прогон <code>{runId}</code><br />Блок <code>{inspectedWebhook.node_id}</code></p>
-    <StepDetails step={inspectedWebhook} runId={runId} findings={findings} sharedProject={sharedProject}/>
+    <StepDetails step={inspectedWebhook} runId={runId} findings={findings}/>
     <button onClick={closeWebhook}>К параметрам блока</button>
   </aside>
   const mavenMode = node?.extended_sca === false ? 'local' : 'extended'
@@ -131,7 +131,7 @@ export function Inspector({ node, step, profiles, findings, runId, inspectedWebh
         {!['inbox', 'browser'].includes(destination) && <small>{sharedProject
           ? 'Получателя задаёт владелец проекта в разделе «Уведомления» личного кабинета.'
           : notificationChannels[destination].hint}</small>}</label>}
-      {step && <StepDetails step={step} runId={runId} findings={findings} sharedProject={sharedProject}/>}
+      {step && <StepDetails step={step} runId={runId} findings={findings}/>}
       <button className={s.delete} onClick={remove}><Trash2 size={14} />Удалить блок</button>
     </>}
   </aside>

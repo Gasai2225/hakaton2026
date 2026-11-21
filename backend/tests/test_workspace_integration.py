@@ -136,11 +136,18 @@ class WorkspaceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(datetime.fromisoformat(started), datetime.fromisoformat(report["created_at"]))
         self.assertLessEqual(datetime.fromisoformat(report["created_at"]), datetime.now(UTC))
         self.assertEqual((await self.other.get(report_url)).status_code, 404)
+        raw_url = report_url + ".json"
+        raw = (await self.editor.get(raw_url)).raise_for_status()
+        self.assertEqual(raw.headers["content-type"], "application/json")
+        self.assertTrue(raw.text.startswith('{\n  "created_at": '))
+        self.assertEqual(raw.json(), {"created_at": report["created_at"], **delivery["payload"]})
+        self.assertEqual((await self.other.get(raw_url)).status_code, 404)
         dismiss = f"/api/browser-reports/{notice['run_id']}/hook/dismiss"
         self.assertEqual((await self.editor.post(dismiss)).status_code, 404)
         self.assertEqual((await self.owner.post(dismiss)).status_code, 204)
         self.assertIsNone((await self.owner.get(feed)).raise_for_status().json())
         self.assertEqual((await self.owner.get(report_url)).raise_for_status().json(), report)
+        self.assertEqual((await self.owner.get(raw_url)).raise_for_status().json(), raw.json())
 
     async def test_telegram_link_is_private_one_time_and_uses_shared_bot(self):
         secret = "fixture-tg-webhook-secret-value-123456"

@@ -272,8 +272,10 @@ def webhook_request(client: httpx.AsyncClient, payload: Receipt, node_id: str, d
            else required_setting("GARDEN_WEBHOOK_URL"))
     if not url:
         raise ValueError("На сервере не задан GARDEN_INBOX_URL")
-    return client.build_request("POST", url, headers={"Idempotency-Key": f"{payload.run_id}/{node_id}"},
-                                json=payload.model_dump(), timeout=10)
+    return client.build_request(
+        "POST", url, headers={"Content-Type": "application/json", "Idempotency-Key": f"{payload.run_id}/{node_id}"},
+        content=payload.model_dump_json(indent=2).encode(), timeout=10,
+    )
 
 
 async def send_webhook(client: httpx.AsyncClient, request: httpx.Request) -> str:

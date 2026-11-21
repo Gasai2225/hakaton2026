@@ -4,7 +4,7 @@ import { message, request } from './api'
 import { reportHref } from './browserReportLinks'
 import s from './workspace.module.css'
 
-export type BrowserReportNotice = { run_id: string; node_id: string; name: string; created_at: string; project_id: string | null }
+type BrowserReportNotice = { run_id: string; node_id: string; name: string; created_at: string; project_id: string | null }
 
 export default function BrowserNotification({ local = false }: { local?: boolean }) {
   const [notice, setNotice] = useState<BrowserReportNotice | null>(null)
@@ -46,11 +46,9 @@ export default function BrowserNotification({ local = false }: { local?: boolean
     try {
       await request<void>('browser-reports/' + encodeURIComponent(current.run_id) + '/' +
         encodeURIComponent(current.node_id) + '/dismiss' + suffix, 'POST')
-      if (open) window.location.assign(reportHref(current.run_id, current.node_id, local))
-      else {
-        dialog.current?.close()
-        setNotice(null)
-      }
+      dialog.current?.close()
+      setNotice(null)
+      if (open) window.location.assign(reportHref(current.run_id, current.node_id))
     } catch (error) {
       setError(message(error))
     } finally {
