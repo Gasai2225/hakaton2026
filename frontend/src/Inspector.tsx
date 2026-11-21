@@ -157,7 +157,7 @@ export function Inspector({ node, step, profiles, findings, runId, inspectedWebh
           onChange={e => update({ enabled: e.target.checked })} />Включить после сохранения</label>
         {!mayRun && !readOnly && <small>Для управления действующим расписанием нужно право запуска проверок.</small>}
       </>}
-      {node.kind === 'condition' && <ConditionSettings predicate={node.predicate} value={node.value} update={update}/>}
+      {node.kind === 'condition' && <ConditionSettings key={node.id} predicate={node.predicate} value={node.value} update={update}/>}
       {node.kind === 'explain' && <>
         <p className={s.hint}>Каждая модель отдельно предложит исправления для тех же находок.</p>
         {targets.map((target, i) => {

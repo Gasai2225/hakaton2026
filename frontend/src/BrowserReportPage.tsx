@@ -20,12 +20,14 @@ const analysisStatus = {
 }
 const reportDate = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Moscow' })
 
-function ReportPreview({ name, created_at, payload }: BrowserReport) {
+export function ReportPreview({ name, created_at, payload }: BrowserReport) {
   const findings = [...payload.findings].sort((a, b) => levels.indexOf(a.severity) - levels.indexOf(b.severity))
   const numbers = new Map(findings.map((finding, index) => [finding.id, index + 1]))
   const counts = { critical: 0, high: 0, medium: 0, low: 0 }
   for (const finding of findings) counts[finding.severity]++
-  const reviews = payload.reviews?.filter(review => review.report) ?? []
+  const reviews = payload.reviews ?? []
+  const withReport = reviews.filter(review => review.report)
+  const failedReviews = reviews.filter(review => review.status === 'failed')
   const status = payload.analysis_status ? analysisStatus[payload.analysis_status] : 'Статус проверки неизвестен'
 
   return <>
@@ -33,6 +35,10 @@ function ReportPreview({ name, created_at, payload }: BrowserReport) {
       <h2 id="report-name">{name}</h2>
       <p className={s.reportMeta}><time dateTime={created_at}>{reportDate.format(new Date(created_at))} МСК</time>
         <span>{status}</span></p>
+      {failedReviews.map((review, index) => <p className={s.error} key={index}>
+        <strong>Ошибка модели {[review.label || review.connection, review.model].filter(Boolean).join(' · ')}</strong>
+        {review.message && <> — {review.message}</>}
+      </p>)}
       <dl className={s.reportMetrics} aria-label="Критичность находок">
         <div><dt>Всего</dt><dd>{findings.length}</dd></div>
         {levels.map(level => <div key={level} data-severity={level}><dt>{levelNames[level]}</dt><dd>{counts[level]}</dd></div>)}
@@ -57,7 +63,7 @@ function ReportPreview({ name, created_at, payload }: BrowserReport) {
     {!!payload.reports.length && <section className={s.section} aria-labelledby="report-recommendations">
       <h2 id="report-recommendations">Рекомендации моделей</h2>
       <div className={s.reportItems}>{payload.reports.map((report, index) => {
-        const review = reviews[index]
+        const review = withReport[index]
         const name = review && JSON.stringify(review.report) === JSON.stringify(report)
           ? [review.label, review.model].filter(Boolean).join(' · ') : ''
         return <article className={s.reportCard} key={index}>

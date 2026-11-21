@@ -143,7 +143,11 @@ class WorkspaceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raw.json(), {"created_at": report["created_at"], **delivery["payload"]})
         self.assertEqual((await self.other.get(raw_url)).status_code, 404)
         pdf_url = report_url + ".pdf"
-        pdf = (await self.editor.get(pdf_url)).raise_for_status()
+        with patch("reportlab.rl_config.invariant", 1):  # Keep PDF timestamps and IDs identical for comparison.
+            pdf = (await self.editor.get(pdf_url)).raise_for_status()
+            downloads = await asyncio.gather(*(client.get(pdf_url) for client in (self.owner, self.editor) * 3))
+            for download in downloads:
+                self.assertEqual(download.raise_for_status().content, pdf.content)
         self.assertEqual(pdf.headers["content-type"], "application/pdf")
         self.assertEqual(pdf.headers["content-disposition"],
                          f'attachment; filename="garden-report-{notice["run_id"]}-hook.pdf"')

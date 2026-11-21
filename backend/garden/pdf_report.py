@@ -97,9 +97,14 @@ def render_report_pdf(report: BrowserReport) -> bytes:
     status = ANALYSIS.get(receipt.analysis_status, "Статус проверки неизвестен")
     date = datetime.fromisoformat(report.created_at).astimezone(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y, %H:%M МСК")
     story = [Paragraph("Отчёт о проверке", TITLE), Paragraph(text(report.name), PROJECT),
-             Paragraph(f"{date} · {status}", META), Spacer(1, 9),
-             metric_cards(Counter(finding.severity for finding in findings), len(findings)),
-             Paragraph("Находки", SECTION)]
+             Paragraph(f"{date} · {status}", META)]
+    for review in receipt.reviews:
+        if review.status == "failed":
+            name = " · ".join(filter(None, (review.label or review.connection, review.model)))
+            reason = f" — {text(review.message)}" if review.message else ""
+            story.append(Paragraph(f"<b>Ошибка модели {text(name)}</b>{reason}", STYLE))
+    story.extend([Spacer(1, 9), metric_cards(Counter(finding.severity for finding in findings), len(findings)),
+                  Paragraph("Находки", SECTION)])
 
     if not findings:
         story.append(Paragraph("Находок нет." if receipt.analysis_status == "complete" else

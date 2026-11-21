@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { Spec } from './api'
 import { severity } from './Results'
 
@@ -25,6 +26,25 @@ const checks: Record<Predicate, Check> = {
 
 type Props = Pick<Spec, 'predicate' | 'value'> & { update: (patch: Partial<Spec>) => void }
 
+function CountInput({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [draft, setDraft] = useState<string>()
+  const invalid = Boolean(draft)
+  return <>
+    <input type="text" inputMode="numeric" maxLength={160} value={draft ?? value}
+      aria-invalid={invalid} aria-describedby={invalid ? 'count-error' : undefined}
+      onBlur={() => setDraft(undefined)} onChange={event => {
+        const next = event.target.value
+        if (/^[0-9]{1,160}$/.test(next)) {
+          setDraft(undefined)
+          onChange(next)
+        } else {
+          setDraft(next)
+        }
+      }}/>
+    {invalid && <small id="count-error">Введите целое число цифрами от 0 до 9.</small>}
+  </>
+}
+
 export function ConditionSettings({ predicate, value, update }: Props) {
   const check = checks[predicate]
   const hint = check.hint ? 'condition-hint' : undefined
@@ -40,7 +60,8 @@ export function ConditionSettings({ predicate, value, update }: Props) {
       ? <select value={value} aria-describedby={hint} onChange={event => changeValue(event.target.value)}>
         {check.choices.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
       </select>
-      : <input type={check.input} min={check.input === 'number' ? 0 : undefined} maxLength={160}
+      : check.input === 'number' ? <CountInput key={predicate} value={value} onChange={changeValue}/>
+      : <input type="text" maxLength={160}
         value={value} aria-describedby={hint} placeholder={check.placeholder}
         onChange={event => changeValue(event.target.value)} />}</label>
     {check.hint && <small id={hint}>{check.hint}</small>}

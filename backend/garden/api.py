@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -26,6 +27,10 @@ from garden.runner import Engine, reason
 from garden.scenarios import generate, repair_demo, repair_template, sources
 from garden.storage import Store
 from garden.submission import readable_report, submission
+
+
+# ReportLab shares its registered fonts across all documents in this process.
+_PDF_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="garden-pdf")
 
 
 class Start(Model):
@@ -495,7 +500,7 @@ async def browser_report_json(key: Id, node_id: Id, request: Request) -> Respons
          responses={200: {"content": {"application/pdf": {}}}})
 async def browser_report_pdf(key: Id, node_id: Id, request: Request) -> Response:
     report = await browser_report(key, node_id, request)
-    pdf = await asyncio.to_thread(render_report_pdf, report)
+    pdf = await asyncio.get_running_loop().run_in_executor(_PDF_EXECUTOR, render_report_pdf, report)
     return Response(pdf, media_type="application/pdf",
                     headers={"Content-Disposition": f'attachment; filename="garden-report-{key}-{node_id}.pdf"'})
 
