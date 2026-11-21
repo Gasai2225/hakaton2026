@@ -120,6 +120,8 @@ class MemberPermissions(unittest.IsolatedAsyncioTestCase):
         await self.member.post("/api/auth/register-and-join", json={**self.form, "invitation_token": invitation["token"]})
         draft = deepcopy(self.project["workflow"])
         draft["nodes"][0].update(kind="schedule", enabled=True)
+        draft["nodes"].append({"id": "scan", "kind": "sast", "x": 200, "y": 0})
+        draft["edges"].append({"id": "start-scan", "source": "start", "target": "scan"})
         save = {"base_revision": 1, "workflow": draft}
         self.assertEqual((await self.member.put(self.path, json=save)).status_code, 403)
         draft["nodes"][0]["enabled"] = False
