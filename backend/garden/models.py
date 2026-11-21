@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 import regex
 from apscheduler.triggers.cron import CronTrigger
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from garden.path_masks import parse_masks
 
@@ -18,6 +19,7 @@ AnalysisStatus = Literal["complete", "partial", "not_run"]
 Severity = Literal["low", "medium", "high", "critical"]
 OsvStatus = Literal["checked", "incomplete", "skipped"]
 Branch = Literal["yes", "no"]
+Destination = Literal["configured", "inbox", "https", "telegram", "email", "browser"]
 Id = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
 TRIGGERS = {"manual", "schedule", "git_event"}
 ANALYZERS = ("secrets", "sast", "sca")
@@ -71,7 +73,7 @@ class Node(Model):
     connection: str = Field(default="ollama", max_length=64)
     model: str = Field(default="", max_length=180)
     targets: list[Target] = Field(default_factory=list, max_length=8)
-    destination: Literal["configured", "inbox"] = "configured"
+    destination: Destination = "configured"
 
     def selected_models(self) -> list[Target]:
         return self.targets or [Target(connection=self.connection, model=self.model)]
@@ -161,7 +163,14 @@ class Blueprint(Model):
 
 
 class Workflow(Blueprint):
-    files: list[Source] = Field(min_length=1, max_length=400)
+    files: list[Source] = Field(max_length=400)
+
+    @model_validator(mode="after")
+    def valid_workflow(self):
+        super().valid_workflow()
+        if not self.files and any(node.kind in ANALYZERS for node in self.nodes):
+            raise PydanticCustomError("missing_sources", "В проекте нет исходных файлов для проверки.")
+        return self
 
     @model_validator(mode="after")
     def valid_files(self):
@@ -234,6 +243,19 @@ class Receipt(Model):
 class WebhookDelivery(Model):
     state: Literal["pending", "attempted", "delivered", "not_sent", "unknown"]
     payload: Receipt | None = None
+    browser_report: bool | None = None
+
+
+class BrowserReportNotice(Model):
+    run_id: Id
+    node_id: Id
+    name: str
+    created_at: str
+    project_id: Id | None = None
+
+
+class BrowserReport(BrowserReportNotice):
+    payload: Receipt
 
 
 class LockAdvisory(Model):

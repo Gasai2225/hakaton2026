@@ -44,7 +44,7 @@ export function TemplatesDialog({ profiles, current, close, apply }: {
       {profiles.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label>
     <label>Модель<input className={s.keyInput} value={model} placeholder={profiles.find(p => p.id === connection)?.model || 'ID модели'} onChange={e => setModel(e.target.value)}/></label>
     <p className={s.hint}>В черновике включите расписание в параметрах блока «Расписание» и сохраните граф.
-      Для серверного webhook задайте адрес в GARDEN_WEBHOOK_URL.</p>
+      Для окна с отчётом выберите канал «В браузере» в блоке «Уведомление».</p>
     {error && <p role="alert" className={s.error}>{error}</p>}{notice && <p role="status">{notice}</p>}
     <div className={s.dialogFoot}><button className={s.primary} disabled={busy || text.trim().length < 3} onClick={() => void perform(async () => {
       const draft = await request<Blueprint>('templates/generate', 'POST', { text, target: { connection, model } })

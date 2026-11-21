@@ -1,15 +1,17 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Download, Settings2, Trash2 } from 'lucide-react'
 import { blocks, defaultGitEvents, eventNames, labels, Tile } from './blocks'
 import type { Profile, Run, Spec, Step, Target } from './api'
 import type { NodeLock } from './boardPresence'
 import { StepFindings } from './Results'
-import { WebhookDelivery } from './WebhookDelivery'
 import s from './studio.module.css'
+
+const WebhookDelivery = lazy(() => import('./WebhookDelivery'))
 
 type Props = {
   node?: Spec; step?: Step; profiles: Profile[]; findings: NonNullable<Run['findings']>
   runId?: string; inspectedWebhook?: Step; closeWebhook: () => void
+  sharedProject: boolean
   downloadCiGraph: () => void
   update: (patch: Partial<Spec>) => void; remove: () => void; connectOpenAI: () => void
   editing?: { lock?: NodeLock; editable: boolean; pending: boolean; interrupted: boolean; online: boolean; start: () => void; finish: () => void }
@@ -20,6 +22,14 @@ type Props = {
 const mavenModes = {
   extended: { label: 'Расширенный', hint: 'Прямые и транзитивные · база и OSV онлайн' },
   local: { label: 'По локальной базе', hint: 'Прямые зависимости · база организаторов' },
+}
+
+const notificationChannels: Record<Exclude<Spec['destination'], 'https'>, { label: string; hint?: string }> = {
+  browser: { label: 'В браузере' },
+  inbox: { label: 'Локальный журнал' },
+  configured: { label: 'Серверный вебхук', hint: 'Адрес из GARDEN_WEBHOOK_URL' },
+  telegram: { label: 'Telegram', hint: 'Чат из GARDEN_TELEGRAM_CHAT_ID' },
+  email: { label: 'Email', hint: 'Получатель из GARDEN_EMAIL_TO' },
 }
 
 function useSecondsLeft(deadline: number, showFrom = Infinity) {
@@ -66,22 +76,27 @@ function StepDetails({ step, runId, findings }: Pick<Props, 'runId' | 'findings'
   return <div className={s.detail}><strong>{labels[step.status]}</strong>{step.message && <p>{step.message}</p>}
     {step.kind === 'webhook' && runId ? <>
       <small>На входе · {step.input_ids?.length ?? 0} · на выходе · {step.output_ids?.length ?? 0}</small>
-      <WebhookDelivery key={[runId, step.node_id, step.status, step.webhook_attempted === true].join('/')}
-        runId={runId} nodeId={step.node_id} />
+      <Suspense fallback={<p role="status">Загрузка отправки…</p>}>
+        <WebhookDelivery key={[runId, step.node_id, step.status, step.webhook_attempted === true].join('/')}
+          runId={runId} nodeId={step.node_id}/>
+      </Suspense>
     </> : <StepFindings step={step} findings={findings} />}
   </div>
 }
 
-export function Inspector({ node, step, profiles, findings, runId, inspectedWebhook, closeWebhook, downloadCiGraph, update, remove, connectOpenAI, editing, removeBlocked, readOnly, mayRun = true }: Props) {
+export function Inspector({ node, step, profiles, findings, runId, inspectedWebhook, closeWebhook, downloadCiGraph,
+  update, remove, connectOpenAI, sharedProject, editing, removeBlocked, readOnly, mayRun = true }: Props) {
   if (inspectedWebhook && runId) return <aside className={s.inspector} id="block-inspector" tabIndex={-1}>
-    <h2>Отправка webhook</h2>
+    <h2>Доставка уведомления</h2>
     <p className={s.hint}>Прогон <code>{runId}</code><br />Блок <code>{inspectedWebhook.node_id}</code></p>
-    <StepDetails step={inspectedWebhook} runId={runId} findings={findings} />
+    <StepDetails step={inspectedWebhook} runId={runId} findings={findings}/>
     <button onClick={closeWebhook}>К параметрам блока</button>
   </aside>
   const mavenMode = node?.extended_sca === false ? 'local' : 'extended'
   const targets = node?.targets?.length ? node.targets : [{ connection: node?.connection || 'ollama', model: node?.model || '' }]
   const gitEvents = node?.git_events ?? defaultGitEvents
+  const destination = node?.destination === 'https' || (sharedProject && node?.destination === 'configured')
+    ? 'browser' : node?.destination ?? 'browser'
   const change = (i: number, patch: Partial<Target>) => update({ targets: targets.map((t, j) => i === j ? { ...t, ...patch } : t) })
   return <aside className={s.inspector} id="block-inspector" tabIndex={-1}>
     <h2><Settings2 size={16} />Параметры блока</h2>
@@ -170,9 +185,15 @@ export function Inspector({ node, step, profiles, findings, runId, inspectedWebh
         <button disabled={targets.length >= 8} onClick={() => update({ targets: [...targets,
           { connection: profiles.find(p => !targets.some(t => t.connection === p.id))?.id || targets[0].connection, model: '' }] })}>Добавить модель</button>
       </>}
-      {node.kind === 'webhook' && <label>Получатель<select value={node.destination} onChange={e => update({ destination: e.target.value as Spec['destination'] })}>
-        <option value="inbox">Локальный журнал</option><option value="configured">Серверный webhook</option></select>
-        {node.destination === 'configured' && <small>Адрес из GARDEN_WEBHOOK_URL</small>}</label>}
+      {node.kind === 'webhook' && <label>Канал доставки<select
+        value={destination}
+        onChange={e => update({ destination: e.target.value as Spec['destination'] })}>
+        {Object.entries(notificationChannels).filter(([value]) => value !== 'configured' || destination === 'configured')
+          .map(([value, { label }]) => <option key={value} value={value}>{label}</option>)}</select>
+        {destination === 'browser' && <small>Показывает окно с кнопкой «Открыть отчёт» после выполнения блока.</small>}
+        {!['inbox', 'browser'].includes(destination) && <small>{sharedProject
+          ? 'Получателя задаёт владелец проекта в разделе «Уведомления» личного кабинета.'
+          : notificationChannels[destination].hint}</small>}</label>}
       </fieldset>
       {node.kind === 'git_event' && <button onClick={downloadCiGraph}><Download size={14} />Скачать ci-workflow.json</button>}
       {step && <StepDetails step={step} runId={runId} findings={findings} />}

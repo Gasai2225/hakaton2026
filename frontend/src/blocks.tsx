@@ -17,7 +17,7 @@ export const blocks: Record<Kind, BlockInfo> = {
   sast: { name: 'Статический анализ', icon: Braces, group: 'Анализ кода', note: 'Kotlin · SAST' },
   condition: { name: 'Условие', icon: GitBranch, group: 'Обработка', note: 'Ветвление' },
   explain: { name: 'AI-объяснение', icon: AudioLines, group: 'Обработка', note: 'Языковая модель' },
-  webhook: { name: 'Уведомление', icon: Radio, group: 'Обработка', note: 'HTTP webhook' },
+  webhook: { name: 'Уведомление', icon: Radio, group: 'Обработка', note: 'Доставка отчёта' },
 }
 export const kinds = Object.keys(blocks) as Kind[]
 export const labels: Record<Run['status'], string> = {
@@ -67,5 +67,5 @@ export function newSpec(kind: Kind, x: number, y: number): Spec {
   return { id: graphId(), kind, x, y, pattern: '*', cron: '0 9 * * *', enabled: false,
     git_events: kind === 'git_event' ? [...defaultGitEvents] : undefined,
     extended_sca: kind === 'sca' ? true : null, online_cve: kind === 'sca',
-    predicate: 'count_gte', value: '1', connection: 'ollama', model: '', destination: 'inbox' }
+    predicate: 'count_gte', value: '1', connection: 'ollama', model: '', destination: 'browser' }
 }

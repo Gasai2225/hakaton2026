@@ -40,6 +40,13 @@ test('ordinary navigation and a freshly opened invitation ignore an abandoned so
   assert.equal(route.authRoute, false)
 })
 
+test('a report link survives password login and the OAuth callback', () => {
+  const report = '/reports/run-123/node_1'
+  assert.equal(inspect(report).next, report)
+  assert.equal(inspect(authLink('login', report)).next, report)
+  assert.equal(inspect('/?auth_complete=1', report).next, report)
+})
+
 test('a successful OAuth callback restores its saved destination or the projects page', () => {
   assert.equal(inspect('/?auth_complete=1').oauthComplete, true)
   assert.equal(inspect('/?auth_complete=1').next, oldInvite)

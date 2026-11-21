@@ -6,10 +6,11 @@ import httpx
 import regex
 from pydantic import ValidationError
 
-from garden.integrations import Gateway, webhook_request
+from garden.integrations import Gateway, prepare_notification
 from garden.models import (
     ANALYZERS, TRIGGERS, Branch, Finding, GitEvent, Node, Receipt, Review, Run, Step, Workflow, analysis_status_for,
 )
+from garden.notifications import project_recipients
 from garden.scanners import analyze
 from garden.storage import Store
 
@@ -59,7 +60,7 @@ class Engine:
                   steps=[Step(node_id=n.id, kind=n.kind, webhook_attempted=False if n.kind == "webhook" else None)
                          for n in workflow.nodes])
         self.store.insert(run, workflow, project_id)
-        task = asyncio.create_task(self.execute(workflow, run, set(selected)))
+        task = asyncio.create_task(self.execute(workflow, run, set(selected), project_id=project_id))
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
         return run
@@ -98,7 +99,7 @@ class Engine:
         if not reports:
             step.message += ". Доступны рекомендации правил"
 
-    async def execute(self, workflow: Workflow, run: Run, triggers: set[str]) -> None:
+    async def execute(self, workflow: Workflow, run: Run, triggers: set[str], *, project_id: str | None = None) -> None:
         steps = {step.node_id: step for step in run.steps}
         nodes = {node.id: node for node in workflow.nodes}
         findings: dict[str, Finding] = {}
@@ -172,13 +173,20 @@ class Engine:
                     payload = Receipt(run_id=run.id, findings=incoming_findings, reviews=reviews,
                                       reports=[r.report for r in reviews if r.report is not None],
                                       analysis_status=analysis_status_for(upstream))
-                    request = webhook_request(self.gateway.client, payload, key, node.destination)
-                    self.store.record_webhook(run.id, key, request.content)
-                    step.webhook_attempted = True
-                    self.publish(run)
-                    response = await self.gateway.client.send(request)
-                    response.raise_for_status()
-                    step.message = f"Отчёт доставлен · HTTP {response.status_code}"
+                    # Saved graphs can still contain the old webhook destinations.
+                    if (node.destination in {"browser", "https"}
+                            or (project_id is not None and node.destination == "configured")):
+                        self.store.record_browser_report(payload, key, datetime.now(UTC).isoformat())
+                        step.webhook_attempted = True
+                        step.message = "Отчёт доступен в браузере"
+                    else:
+                        recipients = project_recipients(self.store.db, project_id) if project_id is not None else None
+                        notification = prepare_notification(self.gateway.client, payload, key, node.destination, recipients,
+                                                            run_name=run.name)
+                        self.store.record_webhook(run.id, key, notification.receipt)
+                        step.webhook_attempted = True
+                        self.publish(run)
+                        step.message = await notification.send()
                 else:
                     step.message = f"Исходных файлов: {len(workflow.files)}"
                     if node.kind == "git_event" and run.git_event is not None:

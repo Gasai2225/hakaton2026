@@ -1,7 +1,9 @@
+import { reportRoute } from './browserReportLinks'
+
 export const projectRoute = /^\/projects\/([\w-]+)(\/access)?$/
 
 function safeDestination(value: string | null) {
-  if (value && (projectRoute.test(value) || ['/templates', '/profile', '/projects'].includes(value)
+  if (value && (projectRoute.test(value) || reportRoute.test(value) || ['/templates', '/profile', '/projects'].includes(value)
     || /^\/#invite=[A-Za-z0-9_-]{8,256}$/.test(value))) return value
   return '/projects'
 }

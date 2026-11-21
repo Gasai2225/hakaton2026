@@ -1,13 +1,18 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react'
 import { ArrowRight, GitFork, LayoutGrid, LogOut, UserRound } from 'lucide-react'
 import { ApiError, message, request } from './api'
 import { CatalogPage } from './CatalogPage'
+import { reportRoute } from './browserReportLinks'
 import { AccessPage, ProjectsPage } from './ProjectPages'
 import { ProjectReportsPage } from './ProjectReportsPage'
 import { authLink, authNavigation, projectRoute } from './authNavigation'
 import { projectUrl, useAction, useResource, type Account, type Project } from './workspaceData'
 import s from './workspace.module.css'
 export type { Account } from './workspaceData'
+
+const NotificationSettings = lazy(() => import('./NotificationSettings'))
+const BrowserReportPage = lazy(() => import('./BrowserReportPage'))
+const BrowserNotification = lazy(() => import('./BrowserNotification'))
 
 const pendingKey = 'garden.oauth.return'
 const { path, query, invite, authRoute, showRegistration, oauthComplete, oauthError, next } =
@@ -120,7 +125,11 @@ function ProfilePage({ user, update }: { user: Account; update: (v: Account) => 
           await request<void>('auth/logout', 'POST'); sessionStorage.removeItem(pendingKey); window.location.replace('/login')
         })}><LogOut size={15}/>Выйти</button></div>
       {action.error && <p role="alert" className={s.error}>{action.error}</p>}
-    </section></main>
+    </section>
+    <Suspense fallback={<p role="status">Загрузка настроек уведомлений…</p>}>
+      <NotificationSettings email={user.email}/>
+    </Suspense>
+  </main>
 }
 
 function InvitePage({ user, token }: { user: Account | null; token: string }) {
@@ -212,16 +221,24 @@ export function Workspace({ renderEditor }: { renderEditor: RenderEditor }) {
     return () => { controller.abort(); window.removeEventListener('hashchange', refresh) }
   }, [retry])
   const project = projectRoute.exec(path)
+  const report = reportRoute.exec(path)
+  const notification = user && !report && <Suspense fallback={null}><BrowserNotification/></Suspense>
   let page: ReactNode
   if (error) page = <main className={s.narrow}><div role="alert" className={s.panel}>{error}{' '}
     <button onClick={() => { setError(''); setRetry(n => n + 1) }}>Повторить</button></div></main>
   else if (user === undefined) page = <main className={s.narrow}><p role="status">Загружаем личный кабинет…</p></main>
   else if (invite) page = <InvitePage user={user} token={invite}/>
   else if (!user) page = <AuthForm register={showRegistration}/>
-  else if (project) return <ProjectPage id={project[1]} accessPage={!!project[2]} user={user} renderEditor={renderEditor}/>
+  else if (project) return <>
+    <ProjectPage id={project[1]} accessPage={!!project[2]} user={user} renderEditor={renderEditor}/>
+    {notification}
+  </>
+  else if (report) page = <Suspense fallback={<p role="status">Загружаем отчёт…</p>}>
+    <BrowserReportPage runId={report[1]} nodeId={report[2]}/>
+  </Suspense>
   else if (path === '/templates') page = <CatalogPage/>
   else if (path === '/profile') page = <ProfilePage user={user} update={setUser}/>
   else if (path === '/' || path === '/projects') page = <ProjectsPage/>
   else page = <main className={s.narrow}><h1>Страница не найдена</h1><a href="/projects">К проектам</a></main>
-  return <div className={s.workspace}><Header user={user ?? undefined}/>{page}</div>
+  return <div className={s.workspace}><Header user={user ?? undefined}/>{page}{notification}</div>
 }

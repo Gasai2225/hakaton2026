@@ -7,7 +7,7 @@ import s from './studio.module.css'
 
 export type Tab = 'findings' | 'packages' | 'lockfile' | 'reviews' | 'steps' | 'history'
 type Findings = NonNullable<Run['findings']>
-const severity = { low: 'Низкая', medium: 'Средняя', high: 'Высокая', critical: 'Критическая' }
+export const severity = { low: 'Низкая', medium: 'Средняя', high: 'Высокая', critical: 'Критическая' }
 const osvStatus = { checked: 'Сверено по версии', incomplete: 'Проверка неполная', skipped: 'Нет точной версии' }
 const time = (value: string) => new Date(value).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'medium' })
 

@@ -3,9 +3,7 @@ import asyncio
 import hashlib
 import os
 import secrets
-import smtplib
 import sqlite3
-import ssl
 import time
 import zlib
 from datetime import UTC, datetime
@@ -19,6 +17,7 @@ from pydantic import Field, StringConstraints, ValidationError, model_validator
 
 from garden import board_presence
 from garden.accounts import check_origin, current_user, normalize_email, public_url, rate_limit, session_user
+from garden.integrations import prepare_smtp_send
 from garden.invitations import InviteToken, find_invitation
 from garden.models import Id, Model, Node, Source, Workflow
 
@@ -425,24 +424,12 @@ def send_invitation(email: str, name: str, token: str) -> str:
         if not origin.startswith("https://"):
             return "failed"
         message = EmailMessage()
-        message["From"] = os.environ["GARDEN_SMTP_FROM"]
         message["To"] = email
         message["Subject"] = "Garden — приглашение в проект"
         message.set_content(f"Вас пригласили в проект «{name}». Войдите с адресом {email} "
                             f"и примите приглашение в течение семи дней.\n\n{origin}/#invite={token}")
-        mode = os.getenv("GARDEN_SMTP_MODE", "starttls")
-        if mode not in ("ssl", "starttls"):
-            return "failed"
-        context = ssl.create_default_context()
-        port = int(os.getenv("GARDEN_SMTP_PORT", "465" if mode == "ssl" else "587"))
-        smtp = (smtplib.SMTP_SSL(host, port, timeout=8, context=context) if mode == "ssl"
-                else smtplib.SMTP(host, port, timeout=8))
-        with smtp:
-            if mode == "starttls":
-                smtp.starttls(context=context)
-            if os.getenv("GARDEN_SMTP_USER"):
-                smtp.login(os.environ["GARDEN_SMTP_USER"], os.environ["GARDEN_SMTP_PASSWORD"])
-            smtp.send_message(message)
+        send = prepare_smtp_send(message)
+        send()
         return "sent"
     except (KeyError, OSError, ValueError, OverflowError):
         return "failed"
