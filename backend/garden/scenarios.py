@@ -1,8 +1,10 @@
-from pathlib import Path
+import re
+from pathlib import Path, PurePath
 from typing import Literal
 
 from pydantic import Field, field_validator
 
+from garden.gradle_catalog import SETTINGS, external_catalogs, version_catalog_name
 from garden.integrations import Gateway
 from garden.models import Blueprint, Edge, Model, Node, Source, Target, Workflow, demo
 
@@ -14,11 +16,19 @@ class Plan(Model):
     condition: Literal["always", "any", "critical"]
     explain: bool
     notify: bool
+    destination: Literal["configured", "inbox"] = "configured"
 
     @field_validator("checks")
     @classmethod
     def unique_checks(cls, value):
         return list(dict.fromkeys(value))
+
+    @field_validator("schedule")
+    @classmethod
+    def daily_time(cls, value: str | None) -> str | None:
+        if value and (time := re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", value)):
+            return f"{int(time[2])} {int(time[1])} * * *"
+        return value
 
 
 def blueprint(plan: Plan, target: Target | None = None) -> Blueprint:
@@ -52,44 +62,66 @@ def blueprint(plan: Plan, target: Target | None = None) -> Blueprint:
         link(previous, "explain", port)
         previous, port = "explain", None
     if plan.notify:
-        nodes.append(Node(id="notify", kind="webhook", x=x + 240, y=0, destination="inbox"))
+        nodes.append(Node(id="notify", kind="webhook", x=x + 240, y=0, destination=plan.destination))
         link(previous, "notify", port)
     return Blueprint(name=plan.name, nodes=nodes, edges=edges)
 
 
 def repair_template(gateway: Gateway) -> Blueprint:
     graph = blueprint(Plan(name="Repair Desk", checks=["secrets", "sast", "sca"], schedule="0 9 * * *",
-                           condition="any", explain=True, notify=True))
+                           condition="any", explain=True, notify=True, destination="inbox"))
     ai = next(node for node in graph.nodes if node.kind == "explain")
     ai.targets = [Target(connection=p.id, model=p.model) for key in ("ollama", "openai")
                   if (p := gateway.profiles.get(key)) and p.model and p.public().configured]
     return graph
 
 
-def sources(root: Path) -> list[Source]:
+IGNORED_SOURCE_DIRS = {".git", ".gradle", "build", "node_modules", ".venv"}
+
+
+def source_file(path: PurePath) -> bool:
+    return (path.suffix in {".kt", ".kts", ".yml", ".yaml", ".properties"}
+            or path.name in {*SETTINGS, "gradle.lockfile"} or version_catalog_name(path.name))
+
+
+def source_text(raw: bytes, path: str) -> str:
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        if not path.endswith(".properties"):
+            raise ValueError(f"Требуется UTF-8 для файла {path}") from None
+        text = raw.decode("latin-1")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def sources(root: Path, *, read_parent_catalog: bool = True) -> list[Source]:
     files = []
     size = 0
-    for folder, dirs, names in root.walk():
-        dirs[:] = sorted(d for d in dirs if d not in {".git", ".gradle", "build", "node_modules", ".venv"}
+
+    def add(path: Path, relative: str):
+        nonlocal size
+        size += path.stat().st_size
+        if size > 5_000_000 or len(files) >= 400:
+            raise ValueError("Лимит проекта — 400 файлов и 5 МБ")
+        files.append(Source(path=relative, text=source_text(path.read_bytes(), relative)))
+
+    def directory_error(error: OSError):
+        raise error
+
+    for folder, dirs, names in root.walk(on_error=directory_error):
+        dirs[:] = sorted(d for d in dirs if d not in IGNORED_SOURCE_DIRS
                          and not (folder / d).is_symlink() and not (folder / d).is_junction()
                          and not (folder / d / ".git").exists())
         for name in sorted(names):
             path = folder / name
-            if path.suffix not in {".kt", ".kts", ".yml", ".yaml", ".properties"} and name not in {"gradle.lockfile", "libs.versions.toml"}:
+            if not source_file(path):
                 continue
             if path.is_symlink() or not path.is_file():
                 continue
-            size += path.stat().st_size
-            if size > 5_000_000 or len(files) >= 400:
-                raise ValueError("Лимит проекта — 400 файлов и 5 МБ")
-            relative = path.relative_to(root).as_posix()
-            try:
-                text = path.read_text(encoding="utf-8-sig")
-            except UnicodeDecodeError:
-                if path.suffix != ".properties":
-                    raise ValueError(f"Требуется UTF-8 для файла {relative}") from None
-                text = path.read_text(encoding="latin-1")
-            files.append(Source(path=relative, text=text))
+            add(path, path.relative_to(root).as_posix())
+    if read_parent_catalog:
+        for relative, path in external_catalogs(root, files):
+            add(path, relative)
     if not files:
         raise ValueError("В проекте нет поддерживаемых исходников")
     return files
@@ -105,7 +137,7 @@ def repair_demo(gateway: Gateway, allow_sample: bool = False) -> Workflow:
     graph.name = "Проверка учебного проекта"
     files = [*demo().files, Source(path="build.gradle.kts", text='dependencies { implementation("org.apache.commons:commons-text:1.9") }'),
              Source(path="Security.kt", text="import org.springframework.security.config.annotation.web.builders.HttpSecurity\n"
-                    "fun configure() { authorize(anyRequest, permitAll) }")]
+                    "fun configure(http: HttpSecurity) { http.authorizeHttpRequests { it.anyRequest().permitAll() } }")]
     return Workflow(**graph.model_dump(), files=files)
 
 
@@ -114,9 +146,14 @@ async def generate(gateway: Gateway, description: str, target: Target) -> Bluepr
     if profile is None or not (target.model or profile.model):
         raise ValueError("Выберите подключение и модель")
     schema = Plan.model_json_schema()
-    prompt = ("Составь JSON-план проверки исходников по описанию. checks: secrets для секретов, sast для Kotlin, "
-              "sca для зависимостей. schedule: cron из пяти полей или null. condition: always, any (есть находки) "
-              "или critical. explain: нужны рекомендации модели. notify: нужна доставка. Название на русском. "
-              "План будет открыт как черновик. Верни только JSON по схеме: " + str(schema))
+    prompt = ("Составь JSON-план по запросу пользователя. В checks включи только запрошенные проверки: "
+              "secrets — секреты, sast — Kotlin-код, sca — зависимости. schedule — время ЧЧ:ММ для ежедневного "
+              "запуска по Москве, cron из пяти полей для других расписаний или null без расписания. "
+              "condition — always, если пользователь не указал условие; any — при наличии находок, "
+              "critical — при критических находках. explain включай только по запросу рекомендаций модели. "
+              "notify включает доставку отчёта; destination — configured для webhook, inbox для локального журнала. "
+              'Пример для «Ежедневно в 08:30 проверь зависимости и отправь отчёт через webhook»: '
+              '{"name":"Проверка зависимостей","checks":["sca"],"schedule":"08:30","condition":"always",'
+              '"explain":false,"notify":true,"destination":"configured"}. Верни только JSON по схеме: ' + str(schema))
     raw = await gateway.complete(profile, target.model or profile.model, prompt, description, schema, 600)
     return blueprint(Plan.model_validate_json(raw), target)

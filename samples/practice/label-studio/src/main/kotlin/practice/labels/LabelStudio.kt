@@ -10,7 +10,7 @@ import org.springframework.web.filter.CorsFilter
 @SpringBootApplication
 class LabelStudio {
     val apiKey = System.getProperty("labels.key", "training-only-label-key")
-    val serviceToken: String? = System.getProperty("labels.token")
+    val serviceToken: String? = System.getProperty("labels.token") ?: System.getenv("LABELS_TOKEN")
 
     @Bean
     fun labelOrigins(): CorsFilter {

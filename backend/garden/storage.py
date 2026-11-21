@@ -2,7 +2,7 @@ import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
-from garden.models import Run, RunSummary, Workflow
+from garden.models import GitEvent, Run, RunSummary, Workflow, analysis_status_for
 
 
 class Store:
@@ -11,6 +11,8 @@ class Store:
         self.db = sqlite3.connect(path)
         self.db.execute("CREATE TABLE IF NOT EXISTS workspace (id INTEGER PRIMARY KEY, body TEXT NOT NULL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS receipts (key TEXT PRIMARY KEY, body TEXT NOT NULL)")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS outgoing_webhooks (
+            run_id TEXT NOT NULL, node_id TEXT NOT NULL, body BLOB NOT NULL, PRIMARY KEY (run_id, node_id))""")
         self.db.execute("CREATE TABLE IF NOT EXISTS templates (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
         self.db.execute("""CREATE TABLE IF NOT EXISTS runs (
             id TEXT PRIMARY KEY, started TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL,
@@ -27,7 +29,10 @@ class Store:
                             review.status = "failed"
                             review.message = "Сервер остановлен во время прогона"
                     step.status = "failed" if step.status == "running" else "skipped"
+                    if step.status == "skipped":
+                        step.skip_reason = "interrupted"
                     step.message = "Сервер остановлен во время прогона"
+            run.analysis_status = analysis_status_for(run.steps)
             self.update(run)
         self.db.commit()
 
@@ -51,6 +56,13 @@ class Store:
         row = self.db.execute("SELECT body FROM runs WHERE id=?", (key,)).fetchone()
         return Run.model_validate_json(row[0]) if row else None
 
+    def record_webhook(self, run_id: str, node_id: str, body: bytes) -> None:
+        with self.db:
+            self.db.execute("INSERT INTO outgoing_webhooks VALUES (?, ?, ?)", (run_id, node_id, body))
+
     def recent(self) -> list[RunSummary]:
-        rows = self.db.execute("SELECT id,started,name,status FROM runs ORDER BY started DESC LIMIT 30")
-        return [RunSummary(id=key, started=started, name=name, status=status) for key, started, name, status in rows]
+        rows = self.db.execute("""SELECT id, started, name, status, json_extract(body, '$.git_event')
+                                  FROM runs ORDER BY started DESC LIMIT 30""")
+        return [RunSummary(id=key, started=started, name=name, status=status,
+                           git_event=GitEvent.model_validate_json(event) if event else None)
+                for key, started, name, status, event in rows]

@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -9,20 +10,22 @@ from pathlib import Path
 from tree_sitter import Language, Node as SyntaxNode, Parser
 import tree_sitter_kotlin
 
-from garden.jdbc import unsafe_sql
+from garden.jdbc_project import source_groups, sql_findings
 from garden.compose import compose_checks, is_compose
-from garden.kotlin_checks import cors, disabled_tls, matcher_conflicts, tokens
+from garden.kotlin_checks import matcher_conflicts, walk
 from garden.maven import Entry, PackageCheck, check_lock, declared, load_catalog, version
 from garden.models import Finding, Kind, LockReport, Severity, Source
-from garden.ownership import reader_methods, unscoped_reads
-from garden.secret_checks import config_secrets, kotlin_secrets
+from garden.ownership import ownership_findings
+from garden.secret_checks import config_secrets, kotlin_secrets, name_class, status_read_fallback
+from garden.spring_cors import cors
+from garden.tls import disabled_tls, unchecked_certificates
 
 
 KOTLIN = Language(tree_sitter_kotlin.language())
 
 
 def finding(file: Source, rule: str, line: int, column: int, title: str, fix: str,
-            severity: Severity = "high", advisory: str | None = None, identity: str = "") -> Finding:
+            severity: Severity, advisory: str | None = None, identity: str = "") -> Finding:
     key = f"{file.path}\0{rule}\0{line}\0{column}\0{advisory or ''}"
     if identity:
         key += "\0" + identity
@@ -30,18 +33,19 @@ def finding(file: Source, rule: str, line: int, column: int, title: str, fix: st
                    column=column, title=title, fix=fix, severity=severity, advisory=advisory)
 
 
-SECRET_RULES = {
-    "api-key": ("API-ключ задан в проекте", "Загрузите ключ из хранилища секретов и отзовите опубликованный ключ."),
-    "password": ("Пароль задан в проекте", "Вынесите пароль из проекта и смените его у соответствующей учётной записи."),
-    "configuration-token": ("Токен авторизации задан в проекте", "Получайте токен из защищённых настроек и замените опубликованный токен."),
-    "secret-fallback": ("При отсутствии настройки используется встроенный секрет", "Уберите встроенное значение и проверьте, что при отсутствии настройки приложение сообщает об ошибке."),
-    "recoverable-token": ("Токен можно восстановить из строковых констант", "Уберите фрагменты токена из проекта, замените токен и получайте его из хранилища секретов."),
-    "embedded-secret": ("Секрет задан в проекте", "Перенесите значение в хранилище секретов и замените опубликованный секрет."),
+SECRET_RULES: dict[str, tuple[str, str, Severity]] = {
+    "api-key": ("API-ключ задан в проекте", "Загрузите ключ из хранилища секретов и отзовите опубликованный ключ.", "medium"),
+    "password": ("Пароль задан в проекте", "Вынесите пароль из проекта и смените его у соответствующей учётной записи.", "high"),
+    "configuration-token": ("Токен авторизации задан в проекте", "Получайте токен из защищённых настроек и замените опубликованный токен.", "high"),
+    "secret-fallback": ("При отсутствии настройки используется встроенный секрет", "Уберите встроенное значение и проверьте, что при отсутствии настройки приложение сообщает об ошибке.", "high"),
+    "recoverable-token": ("Токен можно восстановить из строковых констант", "Уберите фрагменты токена из проекта, замените токен и получайте его из хранилища секретов.", "medium"),
+    "embedded-secret": ("Секрет задан в проекте", "Перенесите значение в хранилище секретов и замените опубликованный секрет.", "high"),
 }
 
 
-def secret(file: Source, line: int, column: int, classification: str) -> Finding:
-    hit = finding(file, "SECRET-LITERAL", line, column, *SECRET_RULES[classification])
+def secret(file: Source, line: int, column: int, classification: str, severity: Severity | None = None) -> Finding:
+    title, fix, base = SECRET_RULES[classification]
+    hit = finding(file, "SECRET-LITERAL", line, column, title, fix, severity or base)
     hit.classification = classification
     return hit
 
@@ -67,10 +71,11 @@ def position(file_bytes: bytes, node: SyntaxNode) -> tuple[int, int]:
 
 def dependency_hits(file: Source, root: SyntaxNode, data: bytes,
                     entries: dict[str, list[Entry]], files: list[Source], issues: list[str],
-                    inventory: list[PackageCheck], extended: bool) -> list[Finding]:
+                    inventory: list[PackageCheck], extended: bool,
+                    online_version: Callable[[str, str | None], bool] | None = None) -> list[Finding]:
     hits = []
     seen = set()
-    for node, dep, entry in declared(root, entries, files, file.path, issues, inventory, extended):
+    for node, dep, entry, bundle in declared(root, entries, files, file.path, issues, inventory, extended, online_version):
         package = f"{dep.group}:{dep.artifact}"
         key = (package, dep.version, entry.identifier)
         if key in seen:
@@ -84,53 +89,61 @@ def dependency_hits(file: Source, root: SyntaxNode, data: bytes,
         fix = f"Проверьте обновление {package} до {fixed}." if fixed else "Подберите версию вне уязвимых диапазонов."
         hit = finding(file, "GRADLE-ADVISORY", *position(data, node),
                       f"{package} {dep.version} входит в диапазон {entry.identifier}", fix,
-                      entry.severity.lower(), entry.identifier, package if b"libs.bundles." in node.text else "")
+                      entry.severity.lower(), entry.identifier, package if bundle else "")
         hit.dependency = dep
         hit.fixed_version = fixed
         hits.append(hit)
     return hits
 
 
-def kotlin_hits(file: Source, kind: Kind, root: SyntaxNode, readers: set[tuple[str, str, str]]) -> list[Finding]:
+def kotlin_hits(file: Source, kind: Kind, root: SyntaxNode, reads: list, sql: list) -> list[Finding]:
     data = file.text.encode()
     if kind == "secrets":
-        return [secret(file, *position(data, node), classification) for classification, node in kotlin_secrets(root)]
-    nodes = tokens(root)
-    words = [data[n.start_byte:n.end_byte].decode() for n in nodes]
-    spring_security = any(
-        words[i:i + 8] == ["import", "org", ".", "springframework", ".", "security", ".", "config"]
-        for i, word in enumerate(words) if word == "import"
-    )
+        hits = []
+        for classification, node in kotlin_secrets(root):
+            severity = None
+            if classification == "secret-fallback" and status_read_fallback(node, root):
+                severity = "low"
+            elif classification == "recoverable-token" and node.type == "identifier" and name_class(node.text.decode()) == "password":
+                severity = "high"
+            hits.append(secret(file, *position(data, node), classification, severity))
+        return hits
     hits = []
-    for i, word in enumerate(words):
-        if spring_security and word in {"anyRequest", "anyExchange"}:
-            java_dsl = words[i + 1:i + 7] == ["(", ")", ".", "permitAll", "(", ")"]
-            kotlin_dsl = words[max(0, i - 2):i] == ["authorize", "("] and words[i + 1:i + 4] == [",", "permitAll", ")"]
-            if java_dsl or kotlin_dsl:
-                hits.append(finding(file, "SPRING-OPEN-DEFAULT", *position(data, nodes[i]),
-                                    "Общее правило разрешает доступ всем запросам",
-                                    "Ограничьте публичный доступ нужными маршрутами и проверьте остальные маршруты с авторизацией."))
-    for matches in (cors(root), unsafe_sql(root), disabled_tls(root), matcher_conflicts(root), unscoped_reads(root, readers)):
+    for matches in (cors(root), sql, disabled_tls(root), matcher_conflicts(root), reads):
         for classification, location in matches:
-            title, fix = SAST_RULES[classification]
-            hit = finding(file, "SPRING-" + classification.upper(), *position(data, location), title, fix)
-            hit.classification = classification
+            hit = finding(file, "SPRING-" + classification.upper(), *position(data, location), *SAST_RULES[classification])
+            hit.classification = "route-authorization" if classification == "open-default" else classification
             hits.append(hit)
+    for method, location in unchecked_certificates(root):
+        name = method.text.decode()
+        if location.type == "catch_block":
+            rule = "JVM-X509-IGNORED-ERROR"
+            title = f"{name} подавляет ошибку проверки цепочки сертификатов"
+            fix = "Передайте исключение вызывающему коду или проверьте цепочку резервным менеджером доверия."
+        else:
+            rule = "JVM-X509-EMPTY-CHECK"
+            title = f"{name} принимает цепочку сертификатов без проверки"
+            fix = "Передайте цепочку на проверку менеджеру доверия из TrustManagerFactory."
+        hit = finding(file, rule, *position(data, location), title, fix, "high")
+        hit.classification = "tls-verification"
+        hits.append(hit)
     return list({hit.id: hit for hit in hits}.values())
 
 
-SAST_RULES = {
+SAST_RULES: dict[str, tuple[str, str, Severity]] = {
+    "open-default": ("Общее правило разрешает доступ всем запросам",
+                     "Ограничьте публичный доступ нужными маршрутами и проверьте остальные маршруты с авторизацией.", "high"),
     "empty-database-root-password": ("MySQL разрешает инициализацию с пустым паролем root",
-                                     "Уберите MYSQL_ALLOW_EMPTY_PASSWORD и настройте пароль root через хранилище секретов."),
+                                     "Уберите MYSQL_ALLOW_EMPTY_PASSWORD и настройте пароль root через хранилище секретов.", "high"),
     "object-authorization": ("Чтение записи по ID без проверки владельца в обработчике и запросе",
-                             "Свяжите выборку с текущим пользователем и проверьте отказ при доступе к чужой записи."),
+                             "Свяжите выборку с текущим пользователем и проверьте отказ при доступе к чужой записи.", "high"),
     "credentialed-cors": ("CORS разрешает любой источник с учётными данными",
-                          "Укажите доверенные источники и проверьте ответы для разрешённого и постороннего origin."),
+                          "Укажите доверенные источники и проверьте ответы для разрешённого и постороннего origin.", "medium"),
     "sql-injection": ("Параметр HTTP встроен в текст запроса к БД",
-                      "Передайте значение отдельно от текста запроса через параметры JDBC или JPA."),
-    "tls-verification": ("Проверка имени узла TLS всегда возвращает true", "Используйте штатную проверку имени узла HTTPS."),
+                      "Передайте значение отдельно через параметры запроса. В Spring R2DBC используйте bind.", "high"),
+    "tls-verification": ("Проверка имени узла TLS всегда возвращает true", "Используйте штатную проверку имени узла HTTPS.", "medium"),
     "route-authorization": ("Публичное исключение пересекается с защищённой группой маршрутов",
-                            "Сверьте исключение с политикой доступа. Проверьте порядок правил и тесты авторизации."),
+                            "Сверьте исключение с политикой доступа. Проверьте порядок правил и тесты авторизации.", "high"),
 }
 
 
@@ -144,11 +157,18 @@ class Analysis:
 
     @property
     def checked_packages(self) -> int:
-        return sum(p.status == "checked" for p in self.packages)
+        return sum(p.status == "checked" or p.osv_status == "checked" for p in self.packages)
 
 
-def analyze_maven(files: list[Source], pattern: str) -> Analysis:
-    extended = os.environ.get("GARDEN_EXTENDED_SCA") == "1"
+def analyze_maven(files: list[Source], pattern: str, extended: bool | None = None, online_cve: bool = False) -> Analysis:
+    if extended is None:
+        extended = os.environ.get("GARDEN_EXTENDED_SCA") == "1"
+    extended = extended or online_cve
+    online_version = None
+    if online_cve:
+        from garden.osv_scan import check_inventory, queryable
+
+        online_version = queryable
     entries = load_catalog(extended)
     result = Analysis()
     parser = Parser(KOTLIN)
@@ -167,7 +187,7 @@ def analyze_maven(files: list[Source], pattern: str) -> Analysis:
             if root.has_error:
                 errors.append(f"Ошибка синтаксического разбора Kotlin в {build.path}")
             else:
-                hits = dependency_hits(build, root, data, entries, files, errors, declarations, extended)
+                hits = dependency_hits(build, root, data, entries, files, errors, declarations, extended, online_version)
                 if fnmatchcase(build.path, pattern):
                     result.findings.extend(hits)
                     result.packages.extend(declarations)
@@ -180,23 +200,53 @@ def analyze_maven(files: list[Source], pattern: str) -> Analysis:
                 result.lockfile.issues.append(f"Не удалось определить все прямые зависимости для {lock.path}")
             check_lock(lock, {p.package for p in declarations}, classified, entries, result.lockfile)
             result.checked += 1
+    if online_cve:
+        check_inventory(result, by_path, entries)
     skipped = len(result.lockfile.packages) - result.lockfile.checked
     if skipped:
-        result.lockfile.issues.append(f"Записей lockfile без проверки по справочнику: {skipped}")
+        databases = "по справочнику или OSV" if online_cve else "по справочнику"
+        result.lockfile.issues.append(f"Записей lockfile без проверки {databases}: {skipped}")
     return result
 
 
-def analyze(kind: Kind, files: list[Source], pattern: str) -> Analysis:
+def parses_kotlin(root: SyntaxNode, parser: Parser) -> bool:
+    if not root.has_error:
+        return True
+    # The grammar sometimes requires a separator after the last member of a one-line class.
+    # Validate with those optional semicolons; scan the original tree to preserve source positions.
+    ends = sorted(body.children[-1].start_byte - root.start_byte for body in walk(root, "class_body")
+                  if body.has_error and body.children and body.children[-1].type == "}" and not body.children[-1].is_missing)
+    if not ends:
+        return False
+    data = root.text
+    offsets = [0, *ends, len(data)]
+    checked = b";".join(data[start:end] for start, end in zip(offsets, offsets[1:]))
+    return not parser.parse(checked).root_node.has_error
+
+
+def analyze(kind: Kind, files: list[Source], pattern: str, extended_sca: bool | None = None, online_cve: bool = False) -> Analysis:
     if kind == "sca":
-        return analyze_maven(files, pattern)
+        return analyze_maven(files, pattern, extended_sca, online_cve)
     parser = Parser(KOTLIN)
     roots = {}
+    invalid = set()
     for file in files:
         if not file.path.endswith((".kt", ".kts")):
             continue
         if kind == "sast" or fnmatchcase(file.path, pattern):
-            roots[file.path] = parser.parse(file.text.encode()).root_node
-    readers = {entry for root in roots.values() if not root.has_error for entry in reader_methods(root)} if kind == "sast" else set()
+            root = parser.parse(file.text.encode()).root_node
+            if parses_kotlin(root, parser):
+                roots[file.path] = root
+            else:
+                invalid.add(file.path)
+    readers = {}
+    sql = {}
+    if kind == "sast":
+        for group, build in source_groups(roots, [f.path for f in files]):
+            if not any(fnmatchcase(path, pattern) for path in group):
+                continue
+            sql.update(sql_findings(group, build))
+            readers.update(ownership_findings(group, build))
     result = Analysis()
     for file in files:
         if not fnmatchcase(file.path, pattern):
@@ -206,11 +256,10 @@ def analyze(kind: Kind, files: list[Source], pattern: str) -> Analysis:
                 hits = compose_hits(file, kind)
             elif file.path.endswith((".yml", ".yaml", ".properties")) and kind == "secrets":
                 hits = [secret(file, line, col, cls) for line, col, cls in config_secrets(file)]
+            elif file.path in invalid:
+                raise ValueError(f"Ошибка синтаксического разбора Kotlin в {file.path}")
             elif file.path in roots:
-                root = roots[file.path]
-                if root.has_error:
-                    raise ValueError(f"Ошибка синтаксического разбора Kotlin в {file.path}")
-                hits = kotlin_hits(file, kind, root, readers)
+                hits = kotlin_hits(file, kind, roots[file.path], readers.get(file.path, []), sql.get(file.path, []))
             else:
                 continue
             result.checked += 1

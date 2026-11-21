@@ -1,3 +1,5 @@
+from collections.abc import Iterable
+from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 from pathlib import PurePosixPath
 from typing import Annotated, Literal
@@ -7,16 +9,25 @@ from apscheduler.triggers.cron import CronTrigger
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-Kind = Literal["manual", "schedule", "secrets", "sca", "sast", "condition", "explain", "webhook"]
+Kind = Literal["manual", "schedule", "git_event", "secrets", "sca", "sast", "condition", "explain", "webhook"]
+GitEventName = Literal["push", "pull_request"]
 Status = Literal["pending", "running", "succeeded", "warning", "failed", "skipped"]
+AnalysisStatus = Literal["complete", "partial", "not_run"]
 Severity = Literal["low", "medium", "high", "critical"]
+OsvStatus = Literal["checked", "incomplete", "skipped"]
 Branch = Literal["yes", "no"]
 Id = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
-TRIGGERS = {"manual", "schedule"}
+TRIGGERS = {"manual", "schedule", "git_event"}
+ANALYZERS = ("secrets", "sast", "sca")
 
 
 class Model(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+class GitEvent(Model):
+    name: GitEventName
+    sha: str = Field(pattern=r"^[a-fA-F0-9]{40}$")
 
 
 class Source(Model):
@@ -48,8 +59,11 @@ class Node(Model):
     x: float = Field(ge=-100_000, le=100_000)
     y: float = Field(ge=-100_000, le=100_000)
     pattern: str = Field(default="*", min_length=1, max_length=200)
+    extended_sca: bool | None = None
+    online_cve: bool = False
     cron: str = Field(default="0 9 * * *", max_length=100)
     enabled: bool = False
+    git_events: list[GitEventName] = Field(default_factory=lambda: ["push", "pull_request"], max_length=2)
     predicate: Literal["count_gte", "severity_eq", "rule_regex"] = "count_gte"
     value: str = Field(default="1", max_length=160)
     connection: str = Field(default="ollama", max_length=64)
@@ -62,10 +76,18 @@ class Node(Model):
 
     @model_validator(mode="after")
     def valid_settings(self):
+        if self.online_cve and (self.kind != "sca" or self.extended_sca is False):
+            raise ValueError("Онлайн-проверка OSV доступна в расширенном режиме SCA")
+        if self.kind == "sca":
+            # Older workflows used null for the server default and a separate online switch.
+            self.extended_sca = self.extended_sca is not False
+            self.online_cve = self.extended_sca
         if len({(t.connection, t.model) for t in self.targets}) != len(self.targets):
             raise ValueError("Такая модель уже выбрана")
         if self.kind == "schedule":
             CronTrigger.from_crontab(self.cron, timezone="Europe/Moscow")
+        if self.kind == "git_event" and (not self.git_events or len(set(self.git_events)) != len(self.git_events)):
+            raise ValueError("Выберите одно или два разных Git-события")
         if self.kind == "condition":
             if self.predicate == "count_gte" and not self.value.isascii():
                 raise ValueError("Порог должен быть целым числом")
@@ -93,6 +115,9 @@ class Blueprint(Model):
     nodes: list[Node] = Field(min_length=1, max_length=40)
     edges: list[Edge] = Field(max_length=120)
 
+    def git_triggers(self, event: GitEventName) -> list[str]:
+        return [n.id for n in self.nodes if n.kind == "git_event" and event in n.git_events]
+
     def order(self) -> tuple[str, ...]:
         graph = TopologicalSorter()
         for node in self.nodes:
@@ -107,7 +132,7 @@ class Blueprint(Model):
         if len(nodes) != len(self.nodes) or len({e.id for e in self.edges}) != len(self.edges):
             raise ValueError("Повторяющийся идентификатор в графе")
         if not TRIGGERS.intersection(nodes.values()):
-            raise ValueError("Добавьте ручной запуск или расписание")
+            raise ValueError("Добавьте ручной запуск, расписание или Git-событие")
         targets = set()
         links = set()
         for edge in self.edges:
@@ -159,6 +184,8 @@ class Finding(Model):
     title: str
     fix: str
     advisory: str | None = None
+    advisory_url: str | None = None
+    severity_estimated: bool = False
     fixed_version: str | None = None
     classification: str | None = None
     dependency: Dependency | None = None
@@ -192,9 +219,35 @@ class Review(Target):
     report: Report | None = None
 
 
+class Receipt(Model):
+    run_id: Id
+    findings: list[Finding]
+    reports: list[Report]
+    reviews: list[Review] = Field(default_factory=list)
+    analysis_status: AnalysisStatus | None = None
+
+
+class WebhookDelivery(Model):
+    state: Literal["pending", "attempted", "delivered", "not_sent", "unknown"]
+    payload: Receipt | None = None
+
+
 class LockAdvisory(Model):
     id: str
     severity: Severity
+    advisory_url: str | None = None
+    severity_estimated: bool = False
+
+
+@dataclass(frozen=True)
+class PackageCheck:
+    path: str
+    line: int
+    package: str
+    version: str | None
+    source: str
+    status: Literal["checked", "outside-catalog", "unresolved"]
+    osv_status: OsvStatus | None = None
 
 
 class LockedPackage(Model):
@@ -205,6 +258,7 @@ class LockedPackage(Model):
     configurations: list[str]
     scope: Literal["transitive", "unclassified"]
     status: Literal["checked", "outside-catalog", "unresolved"]
+    osv_status: OsvStatus | None = None
     advisories: list[LockAdvisory] = Field(default_factory=list)
 
 
@@ -215,20 +269,30 @@ class LockReport(Model):
 
     @property
     def checked(self) -> int:
-        return sum(p.status == "checked" for p in self.packages)
+        return sum(p.status == "checked" or p.osv_status == "checked" for p in self.packages)
 
 
 class Step(Model):
     node_id: str
     kind: Kind
     status: Status = "pending"
+    skip_reason: Literal["inactive", "upstream_failure", "interrupted"] | None = None
     message: str = ""
     input_ids: list[str] = Field(default_factory=list)
     output_ids: list[str] = Field(default_factory=list)
     branch: Branch | None = None
     report: Report | None = None
     reviews: list[Review] = Field(default_factory=list)
+    packages: list[PackageCheck] = Field(default_factory=list)
     lockfile: LockReport | None = None
+    webhook_attempted: bool | None = None
+
+
+def analysis_status_for(steps: Iterable[Step]) -> AnalysisStatus:
+    analyzers = [step for step in steps if step.kind in ANALYZERS and step.skip_reason != "inactive"]
+    if not any(step.status in {"running", "succeeded", "warning", "failed"} for step in analyzers):
+        return "not_run"
+    return "complete" if all(step.status == "succeeded" for step in analyzers) else "partial"
 
 
 class Run(Model):
@@ -236,9 +300,22 @@ class Run(Model):
     name: str
     started: str
     trigger: str
+    git_event: GitEvent | None = None
     status: Status = "running"
     steps: list[Step]
     findings: list[Finding] = Field(default_factory=list)
+    analysis_status: AnalysisStatus | None = None
+
+    @property
+    def ran_analyzer(self) -> bool:
+        return any(step.kind in ANALYZERS and step.status in {"succeeded", "warning", "failed"}
+                   for step in self.steps)
+
+    @property
+    def analysis_complete(self) -> bool:
+        if self.analysis_status is None:  # Historical runs only recorded the overall workflow result.
+            return self.status == "succeeded" and self.ran_analyzer
+        return self.analysis_status == "complete"
 
 
 class RunSummary(Model):
@@ -246,6 +323,7 @@ class RunSummary(Model):
     name: str
     started: str
     status: Status
+    git_event: GitEvent | None = None
 
 
 class ConnectionInfo(Model):

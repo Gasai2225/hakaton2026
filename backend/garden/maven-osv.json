@@ -12,9 +12,13 @@
     "com.h2database:h2",
     "com.mysql:mysql-connector-j",
     "com.ninja-squad:springmockk",
+    "io.projectreactor.kotlin:reactor-kotlin-extensions",
+    "io.projectreactor:reactor-test",
     "javax.cache:cache-api",
     "org.glassfish.jaxb:jaxb-runtime",
     "org.jetbrains.kotlin:kotlin-reflect",
+    "org.jetbrains.kotlin:kotlin-stdlib-jdk8",
+    "org.jetbrains.kotlinx:kotlinx-coroutines-reactor",
     "org.junit.platform:junit-platform-launcher",
     "org.springframework.boot:spring-boot-devtools",
     "org.springframework.boot:spring-boot-starter-actuator",
@@ -26,10 +30,14 @@
     "org.springframework.boot:spring-boot-starter-test",
     "org.springframework.boot:spring-boot-starter-thymeleaf",
     "org.springframework.boot:spring-boot-starter-validation",
+    "org.springframework.boot:spring-boot-starter-web",
     "org.springframework.boot:spring-boot-starter-webflux",
     "org.springframework.boot:spring-boot-starter-webmvc",
     "org.springframework.boot:spring-boot-starter-webmvc-test",
+    "org.springframework.boot:spring-boot-webflux-test",
+    "org.springframework.boot:spring-boot-webmvc-test",
     "org.springframework.security:spring-security-test",
+    "org.thymeleaf.extras:thymeleaf-extras-springsecurity6",
     "org.webjars.npm:bootstrap",
     "org.webjars.npm:font-awesome",
     "org.webjars:webjars-locator-lite",
@@ -278,6 +286,33 @@
           "lower": "2.6.0",
           "lowerInclusive": true,
           "upper": "2.6.6",
+          "upperInclusive": false
+        }
+      ],
+      "fixedVersions": [
+        "2.5.12",
+        "2.6.6"
+      ],
+      "severity": "CRITICAL"
+    },
+    {
+      "id": "GHSA-36p3-wjmg-h94x",
+      "aliases": [
+        "CVE-2022-22965"
+      ],
+      "group": "org.springframework.boot",
+      "artifact": "spring-boot-starter-web",
+      "ranges": [
+        {
+          "lower": null,
+          "upper": "2.5.12",
+          "lowerInclusive": true,
+          "upperInclusive": false
+        },
+        {
+          "lower": "2.6.0",
+          "upper": "2.6.6",
+          "lowerInclusive": true,
           "upperInclusive": false
         }
       ],

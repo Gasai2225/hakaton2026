@@ -4,6 +4,7 @@ uvicorn>=0.32,<1
 APScheduler>=3.11,<4
 tzdata>=2025.1
 httpx>=0.28,<1
+cvss>=3.6,<4
 tree-sitter>=0.25,<0.26
 tree-sitter-kotlin>=1.1,<2
 univers>=32.0.1,<33

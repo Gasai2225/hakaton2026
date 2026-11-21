@@ -1,0 +1,16 @@
+{
+  "name": "Проверка перед слиянием",
+  "nodes": [
+    {"id": "start", "kind": "manual", "x": 0, "y": 0},
+    {"id": "repository", "kind": "git_event", "git_events": ["push", "pull_request"], "x": 0, "y": 150},
+    {"id": "secrets", "kind": "secrets", "x": 250, "y": 0},
+    {"id": "sast", "kind": "sast", "x": 500, "y": 0},
+    {"id": "sca", "kind": "sca", "x": 750, "y": 0, "extended_sca": false}
+  ],
+  "edges": [
+    {"id": "start-secrets", "source": "start", "target": "secrets"},
+    {"id": "repository-secrets", "source": "repository", "target": "secrets"},
+    {"id": "secrets-sast", "source": "secrets", "target": "sast"},
+    {"id": "sast-sca", "source": "sast", "target": "sca"}
+  ]
+}

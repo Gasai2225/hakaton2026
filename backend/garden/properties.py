@@ -2,6 +2,13 @@ import re
 
 
 PROPERTY = re.compile(r"^\s*([\w.-]+)(?:\s*[:=]\s*|\s+)(.*)$")
+ESCAPE = re.compile(r"\\(?:u([a-fA-F0-9]{4})|(.))")
+
+
+def decode_property_value(value: str) -> str:
+    """Decode the Java properties layer once, before resolving Spring placeholders."""
+    controls = {"t": "\t", "r": "\r", "n": "\n", "f": "\f"}
+    return ESCAPE.sub(lambda m: chr(int(m[1], 16)) if m[1] else controls.get(m[2], m[2]), value)
 
 
 def property_entries(text: str):

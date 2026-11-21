@@ -15,6 +15,7 @@ from garden.maven import Interval
 from garden.models import Edge, Node, Source, Workflow
 from garden.scanners import analyze, scan
 from garden.scenarios import sources
+from tests.compare_submission import compare
 
 
 TRAINING = Path(__file__).resolve().parents[2] / "samples/training"
@@ -23,20 +24,9 @@ TRAINING = Path(__file__).resolve().parents[2] / "samples/training"
 def training_workflow(root: Path) -> Workflow:
     files = sources(root)
     kinds = ["manual", "secrets", "sast", "sca"]
-    return Workflow(name="Repair Desk", files=files, nodes=[Node(id=k, kind=k, x=i*260, y=50) for i, k in enumerate(kinds)],
+    nodes = [Node(id=k, kind=k, x=i*260, y=50, extended_sca=False if k == "sca" else None) for i, k in enumerate(kinds)]
+    return Workflow(name="Repair Desk", files=files, nodes=nodes,
                     edges=[Edge(id=a+b, source=a, target=b) for a, b in zip(kinds, kinds[1:])])
-
-
-def matches(row: dict, reference: dict) -> bool:
-    if row["category"] != reference["category"]:
-        return False
-    if row["category"] == "SCA":
-        return (all(row[k] == reference[k] for k in ("path", "group", "artifact", "version"))
-                and row["advisoryId"] in reference["advisoryIds"])
-    if row["class"] != reference["class"]:
-        return False
-    return any(row["path"] == loc["path"] and loc["line"] <= row["line"] <= loc["endLine"]
-               for loc in [reference, *reference.get("alternateLocations", [])])
 
 
 @unittest.skipUnless((TRAINING / "training-project").exists(), "Требуется открытый набор Repair Desk")
@@ -78,7 +68,6 @@ class ParticipantDataset(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(expected), 5)
                 self.assertCountEqual(expected, [(f.path, f.line, f.rule, f.classification, f.advisory) for f in changed])
 
-    @patch.dict(os.environ, {"GARDEN_EXTENDED_SCA": "0"})
     async def test_public_export_and_controls(self):
         graph = training_workflow(TRAINING / "training-project")
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"GARDEN_DB": str(Path(temp) / "tmp.sqlite")}):
@@ -94,14 +83,18 @@ class ParticipantDataset(unittest.IsolatedAsyncioTestCase):
                 export = await api.get(url + "/submission")
                 self.assertEqual(export.status_code, 200)
                 self.assertIn("attachment", export.headers["content-disposition"])
+                html = await api.get(url + "/submission", params={"format": "html"})
+                self.assertEqual(html.status_code, 200)
+                self.assertIn("text/html", html.headers["content-type"])
+                self.assertTrue(html.headers["content-disposition"].endswith('.html"'))
+                self.assertNotIn("Проверка неполная", html.text)
         rows = export.json()["findings"]
+        self.assertEqual(html.text.count("<tr>"), len(rows) + 1)
         gold = json.loads((TRAINING / "ground-truth/training-findings.json").read_bytes())
+        self.assertEqual(compare(export.json(), gold), [])
         self.assertEqual(len(rows), len(result["findings"]))
-        for row in rows:
-            self.assertEqual(sum(matches(row, ref) for ref in gold["findings"]), 1)
-            self.assertFalse(any(matches(row, control) for control in gold["controls"]))
-        for ref in gold["findings"]:
-            self.assertEqual(sum(matches(row, ref) for row in rows), 1, ref["id"])
+        for row, finding in zip(rows, result["findings"], strict=True):
+            self.assertEqual(finding["severity"].upper(), row["severity"])
 
 
 class RuleBoundaries(unittest.TestCase):

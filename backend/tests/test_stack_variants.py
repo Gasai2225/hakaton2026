@@ -13,6 +13,129 @@ def findings(kind, path, text, *support):
 
 
 class KotlinVariants(unittest.TestCase):
+    def test_formatted_sql_tracks_only_inserted_text(self):
+        for expression, jdbc_args, expected in [
+            ('"SELECT title FROM books ORDER BY %s".format(term.trim())', "query", True),
+            ('String.format("SELECT %S", term)', "query", True),
+            ('java.lang.String.format(Locale.ROOT, fmt, term)', "query", True),
+            ('fmt.format(Locale.ROOT, term)', "query", True),
+            ('fmt.format(Locale.getDefault(), term)', "query", True),
+            ('"SELECT " + "%s".format(term)', "query", True),
+            (r'"SELECT %2\$s".format("title", term)', "query", True),
+            (r'"SELECT %2\$s, %<s".format(term, "title")', "query", False),
+            (r'"SELECT %2\$s, %s".format(term, "title")', "query", True),
+            ('"SELECT %s WHERE title = ?".format("title", term)', "query, term", False),
+            ('"SELECT \'%%s\'%n".format(term)', "query", False),
+            ('"SELECT %.0s".format(term)', "query", False),
+            ('"SELECT %h".format(term)', "query", False),
+            ('"SELECT %d, %s".format(term, term)', "query", False),
+            ('"SELECT %03d, %-8.3S".format(2, term)', "query", True),
+            (r'"SELECT %9\$s".format(term)', "query", False),
+            ('"label=%s".format(term)', "query", False),
+        ]:
+            with self.subTest(expression=expression):
+                code = ('import org.springframework.jdbc.core.JdbcTemplate\nimport java.util.Locale\n'
+                        'fun list(db: JdbcTemplate, @RequestParam term: String) {\n'
+                        ' val fmt = "SELECT title FROM books ORDER BY %s"\n'
+                        f' val query = {expression}\n db.queryForList({jdbc_args})\n}}')
+                rows = findings("sast", "Catalog.kt", code)
+                self.assertEqual([(r["class"], r["line"]) for r in rows], [("sql-injection", 6)] if expected else [])
+
+    def test_custom_format_and_jdbc_binding_are_clean(self):
+        for declaration, expression in [
+            ('import sample.format\n', '"SELECT %s".format(term)'),
+            ('private fun String.format(term: String) = "SELECT 1"\n', '"SELECT %s".format(term)'),
+            ('import demo.String as TextFactory\n', 'TextFactory.format("SELECT %s", term)'),
+            ('', 'renderer.format("SELECT %s", term)'),
+            ('', 'java.lang.String.format("SELECT %s", "title")'),
+        ]:
+            with self.subTest(declaration=declaration, expression=expression):
+                code = ('import org.springframework.jdbc.core.JdbcTemplate\n' + declaration +
+                        'fun list(db: JdbcTemplate, @RequestParam term: String) {\n'
+                        f' db.queryForList({expression}, term)\n}}')
+                self.assertEqual(findings("sast", "Catalog.kt", code), [])
+
+    def test_formatted_jpql_through_a_helper(self):
+        src = '''import jakarta.persistence.EntityManager
+import java.util.Locale as Language
+import kotlin.text.format as render
+private fun statement(text: String) = "SELECT b FROM Book b ORDER BY %s".render(text)
+fun read(em: EntityManager, @RequestParam term: String, loc: Language) {
+    em.createQuery(statement(term))
+    em.createQuery("SELECT b FROM Book b ORDER BY %s".render(loc, term))
+    em.createQuery("SELECT b FROM Book b WHERE b.title = :title".render(loc, term)).setParameter("title", term)
+}'''
+        rows = findings("sast", "Books.kt", src)
+        self.assertEqual([(r["class"], r["line"]) for r in rows], [("sql-injection", 6), ("sql-injection", 7)])
+
+    def test_format_in_multiline_kotlin_queries(self):
+        src = '''import org.springframework.jdbc.core.simple.JdbcClient
+fun read(client: JdbcClient, @RequestParam term: String) {
+    val pattern = """
+        |SELECT title FROM books
+        |ORDER BY %2${'$'}s
+    """.trimMargin()
+    client.sql(pattern.format("title", term))
+    client.sql(pattern.format(term, "title"))
+    client.sql("""SELECT %s""".trimIndent().format(term))
+}'''
+        self.assertEqual([r["line"] for r in findings("sast", "Books.kt", src)], [7, 9])
+
+    def test_sql_built_with_kotlin_append(self):
+        for builder, statements, arguments, expected in [
+            ("buildString", 'append("SELECT title FROM books WHERE title = "); append(term)', "query", True),
+            ("buildString", 'appendLine("SELECT title FROM books WHERE title = ?")', "query, term", False),
+            ("kotlin.text.buildString(64)", 'this.append("SELECT ").append(term.trim())', "query", True),
+            ("assemble", 'appendLine(); append("SELECT "); appendLine(term)', "query", True),
+            ("buildString", 'append("SELECT "); if (term.isNotBlank()) { append(term) }', "query", True),
+            ("buildString", 'append("SELECT "); if (term.isNotBlank()) append("1") else append("2")', "query", False),
+            ("buildString", 'append("SELECT "); if (false) append(term) else append("1")', "query", False),
+            ("buildString", 'val term = "title"; append("SELECT "); append(term)', "query", False),
+            ("buildString", 'val part = term.trim(); append("SELECT "); append(part)', "query", True),
+            ("buildString", 'append("SELECT ?"); audit.append(term)', "query, term", False),
+            ("buildString", 'append("SELECT "); append(term); clear(); append("SELECT 1")', "query", False),
+            ("buildString", 'append("SELECT "); append(term); val reset = clear(); append("SELECT 1")', "query", False),
+            ("buildString", 'append("SELECT "); append(term); append(clear().toString())', "query", False),
+            ("buildString", 'append("Report: "); append("SELECT "); append(term)', "query", False),
+            ("buildString", 'append(term)', '"SELECT " + query', True),
+        ]:
+            with self.subTest(builder=builder, statements=statements, arguments=arguments):
+                src = ('import org.springframework.jdbc.core.JdbcTemplate\nimport kotlin.text.buildString as assemble\n'
+                       'class Library(val db: JdbcTemplate) {\n fun search(@RequestParam term: String, audit: StringBuilder) {\n'
+                       f'  val query = {builder} {{ {statements} }}\n  db.queryForList({arguments})\n }}\n}}')
+                rows = findings("sast", "Library.kt", src)
+                self.assertEqual([(r["class"], r["line"]) for r in rows], [("sql-injection", 6)] if expected else [])
+
+    def test_custom_build_string_is_not_a_kotlin_builder(self):
+        for prefix, factory in [
+            ("import sample.render.buildString\n", "buildString"),
+            ("", "renderer.buildString"),
+            ('private fun buildString(block: StringBuilder.() -> Unit) = "SELECT 1"\n', "buildString"),
+        ]:
+            with self.subTest(prefix=prefix, factory=factory):
+                src = ('import org.springframework.jdbc.core.JdbcTemplate\n' + prefix +
+                       'fun search(db: JdbcTemplate, @RequestParam term: String) {\n'
+                       f' val sql = {factory} {{ append("SELECT "); append(term) }}\n db.queryForList(sql)\n}}')
+                self.assertEqual(findings("sast", "Library.kt", src), [])
+
+    def test_append_shadowed_by_a_local_function(self):
+        src = '''import org.springframework.jdbc.core.JdbcTemplate
+fun search(db: JdbcTemplate, @RequestParam term: String) {
+ fun append(text: String) = Unit
+ val query = buildString { this.append("SELECT 1"); append(term) }
+ db.queryForList(query)
+}'''
+        self.assertEqual(findings("sast", "Library.kt", src), [])
+
+    def test_inline_builder_at_typed_database_calls(self):
+        for typ, method in [("org.springframework.jdbc.core.simple.JdbcClient", "sql"),
+                            ("jakarta.persistence.EntityManager", "createQuery"), ("example.View", "sql")]:
+            with self.subTest(typ=typ):
+                src = (f'import {typ} as Target\nfun search(db: Target, @RequestParam term: String) {{\n'
+                       f' db.{method}(buildString {{ append("SELECT "); append(term) }})\n}}')
+                self.assertEqual([r["line"] for r in findings("sast", "Inline.kt", src)],
+                                 [] if typ == "example.View" else [3])
+
     def test_sql_through_a_private_helper(self):
         for helper, query, expected in [
             ("= term.trim()", '"SELECT label FROM items WHERE label = " + label(input)', True),
@@ -201,9 +324,10 @@ class Export(private val sink: Headers) {
                 else:
                     block = 'http.' + registry + ' {\n' + first + '\n' + second + '\n}'
                 code = ('import org.springframework.security.config.annotation.web.builders.HttpSecurity\n'
+                        'import org.springframework.security.config.annotation.web.invoke\n'
                         'fun rules(http: HttpSecurity) { ' + block + ' }')
                 rows = findings("sast", "Web.kt", code)
-                self.assertEqual([(r["class"], r["line"]) for r in rows], [("route-authorization", 3)] if expected else [])
+                self.assertEqual([(r["class"], r["line"]) for r in rows], [("route-authorization", 4)] if expected else [])
 
     def test_direct_owner_read_and_checked_handler(self):
         repo = Source(path="Store.kt", text='''package demo.data
@@ -345,6 +469,59 @@ class Names(val db: Database) {
                 rows = findings("secrets", "Headers.kt", src)
                 self.assertEqual([r["class"] for r in rows], [classification] if classification else [])
                 self.assertNotIn("fixture-only", str(rows))
+
+    def test_basic_auth_overloads_select_the_credential_argument(self):
+        for call, expected in [
+            ('h.setBasicAuth("dHJhaW5pbmc6ZGVtbw==")', "recoverable-token"),
+            ('h.setBasicAuth(user.trim(), "fixture-only")', "password"),
+            ('h.setBasicAuth(user.trim(), "fixture-only", Charsets.UTF_8)', "password"),
+            ('Headers().apply { setBasicAuth(user, "fixture-only", Charsets.UTF_8) }', "password"),
+            ('h.setBasicAuth("fixed-user", external, Charsets.UTF_8)', None),
+            ('h.setBasicAuth(System.getenv("BASIC_CREDENTIALS"))', None),
+            ('h.setBasicAuth(user, System.getenv("BASIC_PASSWORD"), Charsets.UTF_8)', None),
+            ('h.setBasicAuth("example label")', None),
+            ('h.setBasicAuth("dHJhaW5pbmc6")', None),  # Empty password.
+        ]:
+            with self.subTest(call=call):
+                src = ('import org.springframework.http.HttpHeaders as Headers\n'
+                       'fun write(h: Headers, user: String, external: String) {\n' + call + '\n}')
+                rows = findings("secrets", "Client.kt", src)
+                self.assertEqual([(r["class"], r["line"]) for r in rows], [(expected, 3)] if expected else [])
+                self.assertNotIn("fixture-only", str(rows))
+                self.assertNotIn("dHJhaW5pbmc6ZGVtbw==", str(rows))
+
+    def test_basic_auth_only_trusts_the_visible_spring_receiver(self):
+        src = '''import org.springframework.http.HttpHeaders
+class Labels {
+    fun setBasicAuth(left: String, right: String) = left + right
+}
+fun write(h: HttpHeaders, labels: Labels) {
+    val caption = "column-" + "title"
+    labels.setBasicAuth("left", "right")
+    labels.setBasicAuth("left", caption)
+    val stored = "fixture-only"
+    h.setBasicAuth("user", stored, Charsets.UTF_8)
+    run {
+        val h = Labels()
+        h.setBasicAuth("left", "right")
+    }
+}'''
+        rows = findings("secrets", "Client.kt", src)
+        self.assertEqual([(r["class"], r["line"]) for r in rows], [("password", 9)])
+        qualified = 'fun write(h: org.springframework.http.HttpHeaders) = h.setBasicAuth("user", "fixture-only")'
+        self.assertEqual([r["class"] for r in findings("secrets", "Client.kt", qualified)], ["password"])
+
+    def test_basic_auth_resolves_the_visible_encoded_value(self):
+        src = '''import org.springframework.http.HttpHeaders
+fun write(h: HttpHeaders, inputs: List<String>) {
+    val saved = "dHJhaW5pbmc6ZGVtbw=="
+    h.setBasicAuth(saved)
+    h.setBasicAuth(saved)
+    val field = "dHJhaW5pbmc6ZGVtbw=="
+    inputs.forEach { field -> h.setBasicAuth(field) }
+}'''
+        rows = findings("secrets", "Client.kt", src)
+        self.assertEqual([(r["class"], r["line"]) for r in rows], [("recoverable-token", 3)])
 
     def test_kotlin_credentials(self):
         for rhs, expected in [

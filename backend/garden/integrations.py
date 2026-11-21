@@ -10,7 +10,7 @@ import httpx
 from pydantic import AnyHttpUrl, TypeAdapter
 
 from garden.maven import RELEASE
-from garden.models import ConnectionInfo, Finding, PublicConnection, Report, Review
+from garden.models import ConnectionInfo, Finding, PublicConnection, Receipt, Report
 
 
 class UngroundedAdvice(ValueError):
@@ -190,8 +190,10 @@ def report_topic(finding: Finding) -> tuple[str, ...]:
 MAVEN_ID = r"[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*"
 MAVEN_COORDINATE = re.compile(rf"(?<![\w.-])({MAVEN_ID}:{MAVEN_ID})(?::({RELEASE}))?")
 UPGRADE_TARGET = re.compile(
-    rf"""\b(?:(?:до|to)\s+(?:(?:версии|version)\s+)?|(?:на|установите)\s+версию\s+)[`'"]?v?({RELEASE})\b""", re.I
+    rf"""\b(?:(?:до\s+версии|to\s+version|на\s+версию|установите\s+версию)|(?P<bare>до|to))\s+"""
+    rf"""[`'"]?(?P<coordinate>{MAVEN_ID}:{MAVEN_ID}:)?v?(?P<release>{RELEASE})\b""", re.I
 )
+UPGRADE_VERB = re.compile(r"\b(?:обнов\w*|перей\w*|upgrade|update|bump)\s+(?:\w+\s+){0,2}$", re.I)
 
 
 def validate_sca_advice(text: str, fix: str, findings: list[Finding]):
@@ -200,10 +202,17 @@ def validate_sca_advice(text: str, fix: str, findings: list[Finding]):
     targets = {f.fixed_version for f in findings if f.fixed_version}
     known_versions = installed | targets
     for package, release in MAVEN_COORDINATE.findall(text):
+        if not release and re.fullmatch(r"\d+:\d+", package):
+            continue  # A time or ratio alone does not identify a dependency.
         if package not in packages or (release and release not in known_versions):
             raise UngroundedAdvice("LLM указала Maven-координаты вне находки анализатора")
-    if any(v not in targets for v in UPGRADE_TARGET.findall(fix)):
-        raise UngroundedAdvice("LLM предложила версию обновления вне рекомендации анализатора")
+    for match in UPGRADE_TARGET.finditer(fix):
+        release = match["release"]
+        if (match["bare"] and release.isdecimal() and not match["coordinate"]
+                and not UPGRADE_VERB.search(fix[:match.start()])):
+            continue  # A bare integer can specify the number of attempts.
+        if release not in targets:
+            raise UngroundedAdvice("LLM предложила версию обновления вне рекомендации анализатора")
 
 
 def validate_report(raw: str, findings: list[Finding]) -> Report:
@@ -217,6 +226,8 @@ def validate_report(raw: str, findings: list[Finding]) -> Report:
             raise ValueError("LLM объединила находки с разными причинами и исправлениями")
         if len(group.risk.split()) < 3:
             raise ValueError("Модель не объяснила последствие находки")
+        if not group.fix.strip():
+            raise ValueError("Модель не предложила исправление")
         text = f"{group.risk} {group.fix}"
         advisories = {expected[key].advisory.upper() for key in group.finding_ids if expected[key].advisory}
         mentioned = re.findall(r"\b(?:CVE-\d{4}-\d+|GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})\b", text, re.I)
@@ -235,16 +246,10 @@ def validate_report(raw: str, findings: list[Finding]) -> Report:
     return report
 
 
-async def deliver(client: httpx.AsyncClient, run_id: str, node_id: str, findings: list[Finding],
-                  reports: list[Report], reviews: list[Review], destination: str) -> int:
+def webhook_request(client: httpx.AsyncClient, payload: Receipt, node_id: str, destination: str) -> httpx.Request:
     url = (os.environ.get("GARDEN_INBOX_URL", "http://127.0.0.1:8000/api/inbox") if destination == "inbox"
            else os.environ.get("GARDEN_WEBHOOK_URL"))
     if not url:
         raise ValueError("На сервере не задан GARDEN_WEBHOOK_URL")
-    response = await client.post(url, headers={"Idempotency-Key": f"{run_id}/{node_id}"}, json={
-        "run_id": run_id, "findings": [f.model_dump() for f in findings],
-        "reports": [r.model_dump() for r in reports],
-        "reviews": [r.model_dump() for r in reviews],
-    }, timeout=10)
-    response.raise_for_status()
-    return response.status_code
+    return client.build_request("POST", url, headers={"Idempotency-Key": f"{payload.run_id}/{node_id}"},
+                                json=payload.model_dump(), timeout=10)

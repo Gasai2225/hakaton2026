@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,15 +12,16 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import Field, SecretStr
 
+from garden.github_source import GitHubSource, import_github
 from garden.integrations import Gateway
-from garden.models import Blueprint, Finding, Id, Model, PublicConnection, Report, Review, Run, RunSummary, Source, Target, Workflow
+from garden.models import Blueprint, Id, Model, PublicConnection, Receipt, Run, RunSummary, Source, Target, WebhookDelivery, Workflow
 from garden.runner import Engine, reason
 from garden.scenarios import generate, repair_demo, repair_template, sources
 from garden.storage import Store
-from garden.submission import submission
+from garden.submission import readable_report, submission
 
 
 class Start(Model):
@@ -124,6 +126,14 @@ async def connect_openai(body: OpenAIKey, request: Request) -> PublicConnection:
 class Template(Model):
     id: str
     graph: Blueprint
+    description: str = ""
+
+
+class TemplateDraft(Blueprint):
+    description: str = Field(default="", max_length=1500)
+
+    def published(self, key: str) -> Template:
+        return Template(id=key, graph=self, description=self.description)
 
 
 class Description(Model):
@@ -134,17 +144,18 @@ class Description(Model):
 @app.get("/api/templates")
 async def templates() -> list[Template]:
     rows = app.state.store.db.execute("SELECT id,body FROM templates ORDER BY rowid DESC")
-    return [Template(id="repair", graph=repair_template(app.state.engine.gateway)),
-            *(Template(id=key, graph=Blueprint.model_validate_json(raw)) for key, raw in rows)]
+    return [Template(id="repair", graph=repair_template(app.state.engine.gateway),
+                     description="Проверка секретов, Kotlin-кода и зависимостей с отчётом по находкам."),
+            *(TemplateDraft.model_validate_json(raw).published(key) for key, raw in rows)]
 
 
 @app.post("/api/templates", status_code=201)
-async def publish_template(graph: Blueprint) -> Template:
+async def publish_template(graph: TemplateDraft) -> Template:
     key = uuid4().hex
     store = app.state.store
     with store.db:
         store.db.execute("INSERT INTO templates VALUES (?,?)", (key, graph.model_dump_json()))
-    return Template(id=key, graph=graph)
+    return graph.published(key)
 
 
 @app.post("/api/templates/generate")
@@ -171,11 +182,16 @@ def practice_sources(project: Literal["book-index", "label-studio", "reading-roo
     return sources(root)
 
 
-class Receipt(Model):
-    run_id: Id
-    findings: list[Finding]
-    reports: list[Report]
-    reviews: list[Review]
+@app.post("/api/sources/github")
+async def github_sources(body: GitHubSource) -> list[Source]:
+    try:
+        return await import_github(app.state.engine.gateway.client, body)
+    except FileNotFoundError as error:
+        raise HTTPException(404, str(error)) from None
+    except httpx.HTTPError as error:
+        raise HTTPException(502, reason(error)) from None
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
 
 
 @app.post("/api/inbox", status_code=201)
@@ -186,23 +202,30 @@ async def receive(body: Receipt, request: Request):
         raise HTTPException(422, "Получатель ожидает идентификатор шага доставки")
     store = app.state.store
     with store.db:
-        store.db.execute("INSERT OR IGNORE INTO receipts VALUES (?,?)", (key, body.model_dump_json()))
-        if store.db.execute("SELECT body FROM receipts WHERE key=?", (key,)).fetchone()[0] != body.model_dump_json():
-            raise HTTPException(409, "Этот шаг уже доставил другой отчёт")
+        inserted = store.db.execute("INSERT OR IGNORE INTO receipts VALUES (?,?)",
+                                    (key, body.model_dump_json(exclude_unset=True)))
+        if not inserted.rowcount:
+            previous, = store.db.execute("SELECT body FROM receipts WHERE key=?", (key,)).fetchone()
+            if Receipt.model_validate_json(previous) != body:
+                raise HTTPException(409, "Этот шаг уже доставил другой отчёт")
     return {"received": True}
 
 
-@app.get("/api/runs/{key}/receipts")
-async def receipts(key: Id) -> list[Receipt]:
+@app.get("/api/runs/{key}/receipts", response_model=list[Receipt])
+async def receipts(key: Id) -> JSONResponse:
     rows = app.state.store.db.execute("SELECT body FROM receipts WHERE substr(key,1,?)=?", (len(key)+1, key+"/"))
-    return [Receipt.model_validate_json(row[0]) for row in rows]
+    payloads = []
+    for (record,) in rows:
+        receipt = Receipt.model_validate_json(record)
+        # Preserve the response defaults that predate scan status, including reviews.
+        payloads.append(receipt.model_dump(mode="json", exclude={"analysis_status"} - receipt.model_fields_set))
+    return JSONResponse(payloads)
 
 
 @app.post("/api/runs", status_code=202)
 async def start_run(body: Start) -> Run:
     if not any(n.id == body.trigger and n.kind == "manual" for n in body.workflow.nodes):
         raise HTTPException(422, "Для запуска по кнопке укажите ручной триггер")
-    await save_workflow(body.workflow)
     return app.state.engine.start(body.workflow, body.trigger)
 
 
@@ -217,6 +240,31 @@ async def get_run(key: str) -> Run:
     if run is None:
         raise HTTPException(404, "Прогон не найден")
     return run
+
+
+@app.get("/api/runs/{key}/steps/{node_id}/delivery", response_model=WebhookDelivery)
+async def webhook_delivery(key: Id, node_id: Id):
+    run = await get_run(key)
+    step = next((s for s in run.steps if s.node_id == node_id and s.kind == "webhook"), None)
+    if step is None:
+        raise HTTPException(404, "У этого прогона нет такого webhook-шага")
+    if step.status == "skipped":
+        return WebhookDelivery(state="not_sent")
+    db = app.state.store.db
+    if step.webhook_attempted is not None:
+        row = db.execute("SELECT body FROM outgoing_webhooks WHERE run_id=? AND node_id=?", (key, node_id)).fetchone()
+        if row or step.webhook_attempted:
+            state = "delivered" if step.status == "succeeded" else "attempted"
+            return JSONResponse({"state": state, "payload": json.loads(row[0]) if row else None})
+    if step.status in {"pending", "running"}:
+        return WebhookDelivery(state="pending")
+    if step.webhook_attempted is not None:
+        return WebhookDelivery(state="not_sent")
+    # Older external deliveries have no dispatch trace. An inbox receipt is independent evidence.
+    row = db.execute("SELECT body FROM receipts WHERE key=?", (f"{key}/{node_id}",)).fetchone()
+    if row:
+        return JSONResponse({"state": "delivered", "payload": json.loads(row[0])})
+    return WebhookDelivery(state="delivered" if step.status == "succeeded" else "unknown")
 
 
 @app.get("/api/runs/{key}/events", response_class=StreamingResponse)
@@ -248,8 +296,9 @@ async def events(key: str, request: Request):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-@app.get("/api/runs/{key}/submission", response_class=JSONResponse)
-async def export_submission(key: str):
+@app.get("/api/runs/{key}/submission", response_class=JSONResponse,
+         responses={200: {"content": {"text/html": {"schema": {"type": "string"}}}}})
+async def export_submission(key: str, format: Literal["json", "html"] = "json"):
     run = await get_run(key)
     if run.status == "running":
         raise HTTPException(409, "Дождитесь завершения прогона")
@@ -257,4 +306,8 @@ async def export_submission(key: str):
         data = submission(run.findings)
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
-    return JSONResponse(data, headers={"Content-Disposition": f'attachment; filename="findings-{run.id}.json"'})
+    headers = {"Content-Disposition": f'attachment; filename="findings-{run.id}.{format}"'}
+    if format == "html":
+        html = readable_report(data["findings"], complete=run.analysis_complete, workflow_status=run.status)
+        return HTMLResponse(html, headers=headers)
+    return JSONResponse(data, headers=headers)
