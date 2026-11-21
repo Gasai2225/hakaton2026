@@ -1,23 +1,77 @@
-import { Settings2, Trash2 } from 'lucide-react'
-import { blocks, labels, Tile } from './blocks'
-import type { Profile, Spec, Step, Target } from './api'
+import { Download, Settings2, Trash2 } from 'lucide-react'
+import { blocks, defaultGitEvents, eventNames, labels, Tile } from './blocks'
+import type { Profile, Run, Spec, Step, Target } from './api'
+import { StepFindings } from './Results'
+import { WebhookDelivery } from './WebhookDelivery'
 import s from './studio.module.css'
 
 type Props = {
-  node?: Spec; step?: Step; profiles: Profile[]
+  node?: Spec; step?: Step; profiles: Profile[]; findings: NonNullable<Run['findings']>
+  runId?: string; inspectedWebhook?: Step; closeWebhook: () => void
+  downloadCiGraph: () => void
   update: (patch: Partial<Spec>) => void; remove: () => void; connectOpenAI: () => void
 }
 
-export function Inspector({ node, step, profiles, update, remove, connectOpenAI }: Props) {
+const mavenModes = {
+  extended: { label: 'Расширенный', hint: 'Прямые и транзитивные · база и OSV онлайн' },
+  local: { label: 'По локальной базе', hint: 'Прямые зависимости · база организаторов' },
+}
+
+function StepDetails({ step, runId, findings }: Pick<Props, 'runId' | 'findings'> & { step: Step }) {
+  return <div className={s.detail}><strong>{labels[step.status]}</strong>{step.message && <p>{step.message}</p>}
+    {step.kind === 'webhook' && runId ? <>
+      <small>На входе · {step.input_ids?.length ?? 0} · на выходе · {step.output_ids?.length ?? 0}</small>
+      <WebhookDelivery key={[runId, step.node_id, step.status, step.webhook_attempted === true].join('/')}
+        runId={runId} nodeId={step.node_id} />
+    </> : <StepFindings step={step} findings={findings} />}
+  </div>
+}
+
+export function Inspector({ node, step, profiles, findings, runId, inspectedWebhook, closeWebhook, downloadCiGraph, update, remove, connectOpenAI }: Props) {
+  if (inspectedWebhook && runId) return <aside className={s.inspector} id="block-inspector" tabIndex={-1}>
+    <h2>Отправка webhook</h2>
+    <p className={s.hint}>Прогон <code>{runId}</code><br />Блок <code>{inspectedWebhook.node_id}</code></p>
+    <StepDetails step={inspectedWebhook} runId={runId} findings={findings} />
+    <button onClick={closeWebhook}>К параметрам блока</button>
+  </aside>
+  const mavenMode = node?.extended_sca === false ? 'local' : 'extended'
   const targets = node?.targets?.length ? node.targets : [{ connection: node?.connection || 'ollama', model: node?.model || '' }]
+  const gitEvents = node?.git_events ?? defaultGitEvents
   const change = (i: number, patch: Partial<Target>) => update({ targets: targets.map((t, j) => i === j ? { ...t, ...patch } : t) })
-  return <aside className={s.inspector}>
+  return <aside className={s.inspector} id="block-inspector" tabIndex={-1}>
     <h2><Settings2 size={16} />Параметры блока</h2>
     {!node ? <p className={s.hint}>Выберите блок на схеме.</p> : <>
       <div className={s.inspectorTitle}><Tile kind={node.kind} /><strong>{blocks[node.kind].name}</strong></div>
       {['secrets', 'sast', 'sca'].includes(node.kind) && <label>Маска пути<input value={node.pattern}
         onChange={e => update({ pattern: e.target.value })} placeholder="*.kt" /></label>}
+      {node.kind === 'sca' && <>
+        <label>Справочник Maven<select value={mavenMode} aria-describedby="maven-mode-hint"
+          onChange={e => {
+            const extended = e.target.value === 'extended'
+            update({ extended_sca: extended, online_cve: extended })
+          }}>
+          {Object.entries(mavenModes).map(([value, mode]) => <option key={value} value={value}>{mode.label}</option>)}
+        </select></label>
+        <small id="maven-mode-hint" className={s.mavenHint}
+          title={mavenMode === 'extended' ? 'При каждом запуске OSV получит Maven-координаты и версии зависимостей.' : undefined}>
+          {mavenModes[mavenMode].hint}
+        </small>
+      </>}
       {node.kind === 'manual' && <p className={s.hint}>Кнопка «Запустить» начинает проверку с этого блока.</p>}
+      {node.kind === 'git_event' && <>
+        <fieldset className={s.target}><legend>События запуска</legend>
+          {defaultGitEvents.map(event => <label className={s.checkbox} key={event}>
+            <input type="checkbox" checked={gitEvents.includes(event)} disabled={gitEvents.length === 1 && gitEvents[0] === event}
+              onChange={e => update({ git_events: defaultGitEvents.filter(v => v === event ? e.target.checked : gitEvents.includes(v)) })} />
+            {eventNames[event]}{event === 'pull_request' && ' (открытие и обновление)'}
+          </label>)}
+        </fieldset>
+        <p className={s.hint}>Скачайте граф в <code>samples/ci-workflow.json</code> репозитория с Garden Actions,
+          сделайте коммит и push. Результат появится в GitHub Actions и в проверках pull request.</p>
+        <button onClick={downloadCiGraph}><Download size={14} />Скачать ci-workflow.json</button>
+        <p className={s.hint}>CI проверяет изменённые учебные проекты. В ветке CI используйте локальную SCA.
+          Блоки AI и webhook можно подключить к отдельному ручному триггеру.</p>
+      </>}
       {node.kind === 'schedule' && <>
         <label>Расписание cron<input value={node.cron} onChange={e => update({ cron: e.target.value })} /></label>
         <small>Часовой пояс · Москва</small>
@@ -56,8 +110,7 @@ export function Inspector({ node, step, profiles, update, remove, connectOpenAI 
       {node.kind === 'webhook' && <label>Получатель<select value={node.destination} onChange={e => update({ destination: e.target.value as Spec['destination'] })}>
         <option value="inbox">Локальный журнал</option><option value="configured">Серверный webhook</option></select>
         {node.destination === 'configured' && <small>Адрес из GARDEN_WEBHOOK_URL</small>}</label>}
-      {step && <div className={s.detail}><strong>{labels[step.status]}</strong><p>{step.message}</p>
-        <small>Находок на входе {step.input_ids?.length ?? 0} · на выходе {step.output_ids?.length ?? 0}</small></div>}
+      {step && <StepDetails step={step} runId={runId} findings={findings} />}
       <button className={s.delete} onClick={remove}><Trash2 size={14} />Удалить блок</button>
     </>}
   </aside>

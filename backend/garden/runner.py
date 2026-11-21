@@ -45,7 +45,7 @@ class Engine:
         self.tasks: set[asyncio.Task] = set()
         self.listeners: dict[str, set[asyncio.Event]] = {}
 
-    def start(self, workflow: Workflow, trigger: str | GitEvent) -> Run:
+    def start(self, workflow: Workflow, trigger: str | GitEvent, *, project_id: str | None = None) -> Run:
         event = trigger if isinstance(trigger, GitEvent) else None
         if event is not None:
             selected = workflow.git_triggers(event.name)
@@ -58,7 +58,7 @@ class Engine:
         run = Run(id=uuid4().hex, name=workflow.name, started=datetime.now(UTC).isoformat(), trigger=selected[0], git_event=event,
                   steps=[Step(node_id=n.id, kind=n.kind, webhook_attempted=False if n.kind == "webhook" else None)
                          for n in workflow.nodes])
-        self.store.insert(run, workflow)
+        self.store.insert(run, workflow, project_id)
         task = asyncio.create_task(self.execute(workflow, run, set(selected)))
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)

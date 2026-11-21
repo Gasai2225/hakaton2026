@@ -94,7 +94,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(env.stop)
         await self.enterAsyncContext(lifespan(app))
         self.api = await self.enterAsyncContext(httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                                                  base_url="http://local"))
+                                                                  base_url="http://localhost"))
 
     async def execute(self, graph):
         response = await self.api.post("/api/runs", json={"workflow": graph.model_dump(), "trigger": "start"})

@@ -17,6 +17,8 @@ class Store:
         self.db.execute("""CREATE TABLE IF NOT EXISTS runs (
             id TEXT PRIMARY KEY, started TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL,
             snapshot TEXT NOT NULL, body TEXT NOT NULL)""")
+        self.db.execute("CREATE TABLE IF NOT EXISTS project_runs (run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS runs_by_project ON project_runs(project_id)")
         if not self.db.execute("SELECT 1 FROM workspace WHERE id=1").fetchone():
             self.db.execute("INSERT INTO workspace VALUES (1, ?)", (initial().model_dump_json(),))
         for (body,) in self.db.execute("SELECT body FROM runs WHERE status='running'").fetchall():
@@ -43,10 +45,12 @@ class Store:
         with self.db:
             self.db.execute("UPDATE workspace SET body=? WHERE id=1", (workflow.model_dump_json(),))
 
-    def insert(self, run: Run, workflow: Workflow) -> None:
+    def insert(self, run: Run, workflow: Workflow, project_id: str | None = None) -> None:
         with self.db:
             self.db.execute("INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?)", (
                 run.id, run.started, run.name, run.status, workflow.model_dump_json(), run.model_dump_json()))
+            if project_id is not None:
+                self.db.execute("INSERT INTO project_runs VALUES (?, ?)", (run.id, project_id))
 
     def update(self, run: Run) -> None:
         with self.db:
@@ -60,9 +64,10 @@ class Store:
         with self.db:
             self.db.execute("INSERT INTO outgoing_webhooks VALUES (?, ?, ?)", (run_id, node_id, body))
 
-    def recent(self) -> list[RunSummary]:
+    def recent(self, project_id: str | None = None) -> list[RunSummary]:
         rows = self.db.execute("""SELECT id, started, name, status, json_extract(body, '$.git_event')
-                                  FROM runs ORDER BY started DESC LIMIT 30""")
+                                  FROM runs LEFT JOIN project_runs ON run_id=id WHERE project_id IS ?
+                                  ORDER BY started DESC LIMIT 30""", (project_id,))
         return [RunSummary(id=key, started=started, name=name, status=status,
                            git_event=GitEvent.model_validate_json(event) if event else None)
                 for key, started, name, status, event in rows]

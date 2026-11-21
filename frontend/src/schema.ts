@@ -142,6 +142,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sources/github": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Github Sources */
+        post: operations["github_sources_api_sources_github_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/inbox": {
         parameters: {
             query?: never;
@@ -203,6 +220,23 @@ export interface paths {
         };
         /** Get Run */
         get: operations["get_run_api_runs__key__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{key}/steps/{node_id}/delivery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Webhook Delivery */
+        get: operations["webhook_delivery_api_runs__key__steps__node_id__delivery_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -316,6 +350,13 @@ export interface components {
             fix: string;
             /** Advisory */
             advisory?: string | null;
+            /** Advisory Url */
+            advisory_url?: string | null;
+            /**
+             * Severity Estimated
+             * @default false
+             */
+            severity_estimated: boolean;
             /** Fixed Version */
             fixed_version?: string | null;
             /** Classification */
@@ -326,6 +367,23 @@ export interface components {
              * @enum {string}
              */
             category: "SECRET" | "SAST" | "SCA";
+        };
+        /** GitEvent */
+        GitEvent: {
+            /**
+             * Name
+             * @enum {string}
+             */
+            name: "push" | "pull_request";
+            /** Sha */
+            sha: string;
+        };
+        /** GitHubSource */
+        GitHubSource: {
+            /** Repository */
+            repository: string;
+            /** Revision */
+            revision: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -341,6 +399,13 @@ export interface components {
              * @enum {string}
              */
             severity: "low" | "medium" | "high" | "critical";
+            /** Advisory Url */
+            advisory_url?: string | null;
+            /**
+             * Severity Estimated
+             * @default false
+             */
+            severity_estimated: boolean;
         };
         /** LockReport */
         LockReport: {
@@ -373,6 +438,8 @@ export interface components {
              * @enum {string}
              */
             status: "checked" | "outside-catalog" | "unresolved";
+            /** Osv Status */
+            osv_status?: ("checked" | "incomplete" | "skipped") | null;
             /** Advisories */
             advisories?: components["schemas"]["LockAdvisory"][];
         };
@@ -384,7 +451,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "manual" | "schedule" | "secrets" | "sca" | "sast" | "condition" | "explain" | "webhook";
+            kind: "manual" | "schedule" | "git_event" | "secrets" | "sca" | "sast" | "condition" | "explain" | "webhook";
             /** X */
             x: number;
             /** Y */
@@ -394,6 +461,13 @@ export interface components {
              * @default *
              */
             pattern: string;
+            /** Extended Sca */
+            extended_sca?: boolean | null;
+            /**
+             * Online Cve
+             * @default false
+             */
+            online_cve: boolean;
             /**
              * Cron
              * @default 0 9 * * *
@@ -404,6 +478,8 @@ export interface components {
              * @default false
              */
             enabled: boolean;
+            /** Git Events */
+            git_events?: ("push" | "pull_request")[];
             /**
              * Predicate
              * @default count_gte
@@ -442,6 +518,26 @@ export interface components {
              */
             key: string;
         };
+        /** PackageCheck */
+        PackageCheck: {
+            /** Path */
+            path: string;
+            /** Line */
+            line: number;
+            /** Package */
+            package: string;
+            /** Version */
+            version: string | null;
+            /** Source */
+            source: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "checked" | "outside-catalog" | "unresolved";
+            /** Osv Status */
+            osv_status?: ("checked" | "incomplete" | "skipped") | null;
+        };
         /** PublicConnection */
         PublicConnection: {
             /** Id */
@@ -467,7 +563,7 @@ export interface components {
             /** Reports */
             reports: components["schemas"]["Report"][];
             /** Reviews */
-            reviews: components["schemas"]["Review"][];
+            reviews?: components["schemas"]["Review"][];
         };
         /** Report */
         Report: {
@@ -507,6 +603,7 @@ export interface components {
             started: string;
             /** Trigger */
             trigger: string;
+            git_event?: components["schemas"]["GitEvent"] | null;
             /**
              * Status
              * @default running
@@ -531,6 +628,7 @@ export interface components {
              * @enum {string}
              */
             status: "pending" | "running" | "succeeded" | "warning" | "failed" | "skipped";
+            git_event?: components["schemas"]["GitEvent"] | null;
         };
         /** Source */
         Source: {
@@ -553,7 +651,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "manual" | "schedule" | "secrets" | "sca" | "sast" | "condition" | "explain" | "webhook";
+            kind: "manual" | "schedule" | "git_event" | "secrets" | "sca" | "sast" | "condition" | "explain" | "webhook";
             /**
              * Status
              * @default pending
@@ -574,7 +672,11 @@ export interface components {
             report?: components["schemas"]["Report"] | null;
             /** Reviews */
             reviews?: components["schemas"]["Review"][];
+            /** Packages */
+            packages?: components["schemas"]["PackageCheck"][];
             lockfile?: components["schemas"]["LockReport"] | null;
+            /** Webhook Attempted */
+            webhook_attempted?: boolean | null;
         };
         /** Target */
         Target: {
@@ -591,6 +693,25 @@ export interface components {
             /** Id */
             id: string;
             graph: components["schemas"]["Blueprint"];
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+        };
+        /** TemplateDraft */
+        TemplateDraft: {
+            /** Name */
+            name: string;
+            /** Nodes */
+            nodes: components["schemas"]["Node"][];
+            /** Edges */
+            edges: components["schemas"]["Edge"][];
+            /**
+             * Description
+             * @default
+             */
+            description: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -604,6 +725,15 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /** WebhookDelivery */
+        WebhookDelivery: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "pending" | "attempted" | "delivered" | "not_sent" | "unknown";
+            payload?: components["schemas"]["Receipt"] | null;
         };
         /** Workflow */
         Workflow: {
@@ -780,7 +910,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Blueprint"];
+                "application/json": components["schemas"]["TemplateDraft"];
             };
         };
         responses: {
@@ -867,6 +997,39 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Source"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    github_sources_api_sources_github_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GitHubSource"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -1023,6 +1186,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Run"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    webhook_delivery_api_runs__key__steps__node_id__delivery_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                node_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookDelivery"];
                 };
             };
             /** @description Validation Error */

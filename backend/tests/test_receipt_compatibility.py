@@ -14,7 +14,7 @@ class ReceiptCompatibility(unittest.IsolatedAsyncioTestCase):
         self.enterContext(patch.dict(os.environ, {"GARDEN_DB": ":memory:"}))
         await self.enterAsyncContext(lifespan(app))
         self.client = await self.enterAsyncContext(
-            httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost")
         )
         graph = demo()
         graph.nodes.append(Node(id="send", kind="webhook", x=0, y=0))

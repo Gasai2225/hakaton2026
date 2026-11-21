@@ -30,7 +30,7 @@ class AnalysisStatus(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.enterContext(patch.dict(os.environ, {"GARDEN_DB": str(self.root / "runs.sqlite"),
                                                   "GARDEN_WEBHOOK_URL": "http://fixture.invalid/receive"}))
-        self.api = await self.enterAsyncContext(httpx.AsyncClient(base_url="http://local",
+        self.api = await self.enterAsyncContext(httpx.AsyncClient(base_url="http://localhost",
                                                                    transport=httpx.ASGITransport(app=app)))
 
     async def execute(self, graph):

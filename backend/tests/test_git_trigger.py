@@ -16,7 +16,7 @@ class GitTriggerTests(unittest.IsolatedAsyncioTestCase):
         self.enterContext(patch.dict(os.environ, {"GARDEN_DB": ":memory:", "GARDEN_WEBHOOK_URL": "http://test/hook"}))
         await self.enterAsyncContext(lifespan(app))
         self.api = await self.enterAsyncContext(httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                                                  base_url="http://test"))
+                                                                  base_url="http://localhost"))
         self.engine = app.state.engine
 
     async def test_overlapping_subscriptions_share_one_run_and_one_delivery(self):

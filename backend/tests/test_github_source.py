@@ -54,7 +54,7 @@ class GitHubSourceTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(404))) as client:
             engine = SimpleNamespace(gateway=SimpleNamespace(client=client))
             with patch.object(app.state, "engine", engine, create=True):
-                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost") as api:
                     for repository, revision, status, message in [
                         (REPOSITORY, SHA, 404, "Ревизия"),
                         (REPOSITORY, "main", 422, "полный SHA"),
@@ -92,7 +92,7 @@ class GitHubSourceTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, content=data))) as client:
                 engine = SimpleNamespace(gateway=SimpleNamespace(client=client))
                 with patch.object(app.state, "engine", engine, create=True):
-                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost") as api:
                         response = await api.post("/api/sources/github", json={"repository": REPOSITORY, "revision": SHA})
             self.assertEqual(response.status_code, 422)
             self.assertIn("конфликт путей", response.json()["detail"])

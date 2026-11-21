@@ -39,7 +39,7 @@
 .saveState svg { color: #6b8e7c }
 button.primary { color: #fff; background: var(--green); border-color: var(--green); padding-inline: 16px }
 button.primary:hover:enabled { background: #194d39; border-color: #194d39 }
-.workspace { display: grid; grid-template-columns: 215px minmax(0,1fr) 225px; min-height: 435px;
+.workspace { display: grid; grid-template-columns: 215px minmax(0,1fr) var(--inspector-width, 225px); min-height: 435px;
   border: 1px solid var(--stroke); border-radius: 12px; overflow: hidden; background: white }
 .library, .inspector { padding: 18px 15px; min-width: 0 }
 .library { border-right: 1px solid var(--stroke) }
@@ -90,11 +90,13 @@ button.primary:hover:enabled { background: #194d39; border-color: #194d39 }
 .studio [data-state="running"] { color: #226aa6 }
 .inspectorTitle { margin-top: 20px; padding: 0 0 15px; border-bottom: 1px solid var(--stroke) }
 .inspector label, .dialog label { display: block; font-size: 12px; margin-top: 15px; font-weight: 550 }
-.inspector input:not([type=checkbox]), .inspector select, .dialog select {
+.inspector input:not([type=checkbox]), .inspector select, .dialog select, .dialog input:is([type=url], [type=text]) {
   display: block; width: 100%; padding: 8px; border: 1px solid #cdd7d0; background: white; border-radius: 6px; margin-top: 5px;
 }
 .inspector .checkbox { display: flex; align-items: center; gap: 4px }
 .hint, .detail, .inspector small { color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere }
+.workspace:has(.mavenHint) { --inspector-width: 310px }
+.mavenHint { display: block; margin-top: 4px; white-space: nowrap; overflow-x: auto }
 .hint, .detail { margin-top: 15px }
 .detail { padding: 9px; background: #f6f8f6; border-radius: 5px }
 .delete { margin-top: 20px; border: 0; color: #94564c; font-size: 11px; padding: 4px 0 }
@@ -122,6 +124,18 @@ button.primary:hover:enabled { background: #194d39; border-color: #194d39 }
 .advice { border-left: 2px solid #bbd2c2; padding: 6px 10px; margin-top: 5px }
 .historyRow, .stepRow { display: flex; align-items: center; justify-content: flex-start; gap: 10px; width: 100%; text-align: left; font-size: 12px }
 .historyRow small, .stepRow small { margin-left: auto; color: var(--muted) }
+.historyRow { overflow-wrap: anywhere }
+.historyRow[aria-expanded=true] { background: #f1f5f2 }
+.historyRow[aria-expanded=true] > svg:last-child { transform: rotate(180deg) }
+.historyRow [data-state="success"] { color: #26704c }
+.historyRow [data-state="failure"], .historyRow [data-state="timed_out"] { color: #a63229 }
+.historyNote, .ciLinks { padding: 9px 0; font-size: 12px; color: var(--muted) }
+.historyNote[role=alert] { color: #a63229 }
+.historyNote button { padding: 3px 8px; font-size: 11px }
+.ciDetails { padding: 4px 14px 12px; border-left: 2px solid #bbd2c2 }
+.ciDetails .lockReport { padding: 8px 0; overflow-wrap: anywhere }
+.ciLinks, .ciLinks a { display: flex; align-items: center; gap: 6px }
+.ciLinks a { color: var(--green) }
 .status { min-width: 80px; font-size: 11px }
 .stepRow details { margin-left: auto; min-width: 125px; max-width: 100%; color: var(--muted) }
 .stepRow details div { margin: 7px 0 }
@@ -150,9 +164,9 @@ button.primary:hover:enabled { background: #194d39; border-color: #194d39 }
 .reviews p { margin: 3px 0 9px }
 .reviewLink { justify-self: start; color: var(--green); font-size: 11px }
 .controls, .tabs, .fileActions { flex-wrap: wrap }
-@media (min-width: 1450px) { .canvas { min-height: 490px } .workspace { grid-template-columns: 240px minmax(0,1fr) 255px } }
+@media (min-width: 1450px) { .canvas { min-height: 490px } .workspace { grid-template-columns: 240px minmax(0,1fr) var(--inspector-width, 255px) } }
 @media (max-width: 1050px) {
-  .workspace { grid-template-columns: 182px minmax(0,1fr) 185px }
+  .workspace { grid-template-columns: 182px minmax(0,1fr) var(--inspector-width, 185px) }
   .library, .inspector { padding: 14px 10px }
   .saveState { display: none }
 }
@@ -177,3 +191,5 @@ button.primary:hover:enabled { background: #194d39; border-color: #194d39 }
   .tabs button { gap: 4px }
   .historyRow, .stepRow { flex-wrap: wrap }
 }
+.editorLink { display: inline-flex; align-items: center; padding: 10px 13px; border: 1px solid var(--stroke); border-radius: 7px; background: white; color: inherit; font-size: 13px; text-decoration: none }
+.editorLink:hover { background: #f1f5f2 }

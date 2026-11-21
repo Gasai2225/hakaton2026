@@ -18,7 +18,7 @@ class SchedulePersistenceTests(unittest.IsolatedAsyncioTestCase):
         temp = self.enterContext(tempfile.TemporaryDirectory())
         self.enterContext(patch.dict(os.environ, {"GARDEN_DB": str(Path(temp) / "test.sqlite")}))
         api = await self.enterAsyncContext(httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                                             base_url="http://local"))
+                                                             base_url="http://localhost"))
         graph = demo()
         minute = (datetime.now(UTC).minute + 30) % 60
         trigger = Node(id="start", kind="schedule", x=0, y=0, enabled=True, cron=f"{minute} * * * *")

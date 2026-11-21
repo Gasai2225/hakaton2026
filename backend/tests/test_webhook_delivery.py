@@ -62,7 +62,7 @@ class WebhookDeliveryTests(unittest.IsolatedAsyncioTestCase):
             await release.wait()
             return httpx.Response(204)
 
-        api = await self.enterAsyncContext(httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test"))
+        api = await self.enterAsyncContext(httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost"))
         async with lifespan(app), httpx.AsyncClient(transport=httpx.MockTransport(receiver)) as sink:
             graph = demo()
             graph.nodes.append(Node(id="send", kind="webhook", x=0, y=0))
@@ -105,7 +105,7 @@ class WebhookDeliveryTests(unittest.IsolatedAsyncioTestCase):
         }))
         await self.enterAsyncContext(lifespan(app))
         api = await self.enterAsyncContext(httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                                             base_url="http://test"))
+                                                             base_url="http://localhost"))
         graph = blueprint(Plan(name="Webhook", checks=["secrets"], schedule=None, condition="any",
                                explain=True, notify=True))
         next(node for node in graph.nodes if node.kind == "webhook").destination = "configured"

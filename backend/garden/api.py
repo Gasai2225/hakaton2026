@@ -10,11 +10,13 @@ from uuid import uuid4
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, ValidationError
 
+from garden.actions_history import ActionsHistory
+from garden import accounts, account_oauth, projects, catalog
 from garden.github_source import GitHubSource, import_github
 from garden.integrations import Gateway
 from garden.models import Blueprint, Id, Model, PublicConnection, Receipt, Run, RunSummary, Source, Target, WebhookDelivery, Workflow
@@ -29,19 +31,56 @@ class Start(Model):
     trigger: str
 
 
-def schedules(app: FastAPI, workflow: Workflow) -> None:
+class ProjectStart(Model):
+    trigger: Id
+    revision: int = Field(ge=1)
+
+
+def team_connections() -> set[str]:
+    return {item.strip() for item in os.environ.get("GARDEN_TEAM_CONNECTIONS", "ollama").split(",") if item.strip()}
+
+
+def ensure_team_targets(workflow: Workflow):
+    allowed = team_connections()
+    if any(target.connection not in allowed for node in workflow.nodes if node.kind == "explain"
+           for target in node.selected_models()):
+        raise HTTPException(422, "Выберите AI-подключение, доступное для совместных проектов")
+
+
+def schedules(app: FastAPI, workflow, project_id: str | None = None) -> None:
     scheduler = app.state.scheduler
-    scheduler.remove_all_jobs()
+    prefix = f"{project_id}/" if project_id else ""
+    for job in scheduler.get_jobs():
+        if (job.id.startswith(prefix) if project_id else "/" not in job.id):
+            scheduler.remove_job(job.id)
+    if not any(n.kind == "schedule" and n.enabled for n in workflow.nodes):
+        return
+    try:
+        valid = Workflow.model_validate(workflow.model_dump())
+        if project_id:
+            ensure_team_targets(valid)
+    except (ValidationError, HTTPException):
+        return  # An unfinished project draft may still contain an enabled schedule.
 
     async def scheduled(key: str) -> None:
-        current = app.state.store.workflow()
+        if project_id:
+            row = app.state.store.db.execute("SELECT body FROM projects WHERE id=?", (project_id,)).fetchone()
+            if not row:
+                return
+            try:
+                current = Workflow.model_validate_json(row[0])
+                ensure_team_targets(current)
+            except (ValidationError, HTTPException):
+                return
+        else:
+            current = app.state.store.workflow()
         if any(n.id == key and n.kind == "schedule" and n.enabled for n in current.nodes):
-            app.state.engine.start(current, key)
+            app.state.engine.start(current, key, project_id=project_id)
 
     for node in workflow.nodes:
         if node.kind == "schedule" and node.enabled:
             scheduler.add_job(scheduled, CronTrigger.from_crontab(node.cron, timezone="Europe/Moscow"),
-                              args=[node.id], id=node.id, coalesce=True)
+                              args=[node.id], id=prefix + node.id, coalesce=True)
 
 
 @asynccontextmanager
@@ -51,9 +90,18 @@ async def lifespan(app: FastAPI):
         gateway = Gateway.configured(client)
         store = Store(path, lambda: repair_demo(gateway, allow_sample=True))
         app.state.store = store
+        accounts.init_accounts(store.db)
+        projects.init_projects(store.db)
+        catalog.init_catalog(store.db)
+        app.state.actions_history = ActionsHistory(path.parent / "reports")
         app.state.engine = Engine(store, gateway)
         app.state.scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+        app.state.reschedule_project = lambda pid, workflow: schedules(app, workflow, pid)
         schedules(app, store.workflow())
+        for pid, body in store.db.execute("""SELECT id,body FROM projects WHERE EXISTS (
+                SELECT 1 FROM json_each(body,'$.nodes')
+                WHERE json_extract(value,'$.kind')='schedule' AND json_extract(value,'$.enabled')=1)"""):
+            schedules(app, projects.ProjectGraph.model_validate_json(body), pid)
         app.state.scheduler.start()
         try:
             yield
@@ -64,6 +112,41 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Garden Workflow", version="0.1.0", lifespan=lifespan)
+app.include_router(accounts.router)
+app.include_router(account_oauth.router)
+app.include_router(projects.router)
+app.include_router(catalog.router)
+
+
+@app.middleware("http")
+async def private_api_responses(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "private, no-store")
+        if "Cookie" not in response.headers.get("Vary", "").split(", "):
+            response.headers.add_vary_header("Cookie")
+    return response
+
+
+def is_local_studio(request: Request) -> bool:
+    local = {"127.0.0.1", "localhost", "::1"}
+    public_origin = os.environ.get("GARDEN_PUBLIC_ORIGIN")
+    return bool((not public_origin or urlsplit(public_origin).hostname in local) and
+                request.client and request.client.host in local and request.url.hostname in local)
+
+
+async def local_studio(request: Request) -> None:
+    if not is_local_studio(request):
+        raise HTTPException(403, "Локальная студия доступна только на этом компьютере")
+    if request.method != "GET":
+        accounts.check_origin(request)
+
+
+async def studio_user(request: Request) -> None:
+    if not is_local_studio(request):
+        accounts.current_user(request)
+    if request.method != "GET":
+        accounts.check_origin(request)
 
 
 @app.exception_handler(RequestValidationError)
@@ -73,26 +156,56 @@ async def invalid_request(request: Request, error: RequestValidationError):
     return JSONResponse(status_code=422, content={"detail": " · ".join(details[:3])})
 
 
-@app.get("/api/workflow")
+@app.get("/api/workflow", dependencies=[Depends(local_studio)])
 async def get_workflow() -> Workflow:
     return app.state.store.workflow()
 
 
-@app.get("/api/demo")
+@app.get("/api/demo", dependencies=[Depends(studio_user)])
 async def get_demo() -> Workflow:
     return repair_demo(app.state.engine.gateway, allow_sample=True)
 
 
-@app.put("/api/workflow")
+@app.put("/api/workflow", dependencies=[Depends(local_studio)])
 async def save_workflow(workflow: Workflow) -> Workflow:
     app.state.store.save(workflow)
     schedules(app, workflow)
     return workflow
 
 
-@app.get("/api/connections")
+@app.get("/api/connections", dependencies=[Depends(studio_user)])
 async def connections() -> list[PublicConnection]:
     return [p.public() for p in app.state.engine.gateway.profiles.values()]
+
+
+@app.get("/api/projects/{project_id}/connections")
+async def project_connections(project_id: Id, request: Request) -> list[PublicConnection]:
+    projects.accessible_row(request, project_id, False)
+    return [p.public().model_copy(update={"local_key_entry": False}) for p in app.state.engine.gateway.profiles.values()
+            if p.id in team_connections()]
+
+
+@app.get("/api/projects/{project_id}/runs")
+async def project_runs(project_id: Id, request: Request) -> list[RunSummary]:
+    projects.accessible_row(request, project_id, False)
+    return app.state.store.recent(project_id)
+
+
+@app.post("/api/projects/{project_id}/runs", status_code=202)
+async def start_project_run(project_id: Id, body: ProjectStart, request: Request) -> Run:
+    accounts.check_origin(request)
+    project = projects.require_project(request, project_id)
+    if body.revision != project.revision:
+        raise HTTPException(409, "Граф изменился перед запуском. Дождитесь синхронизации и повторите.")
+    try:
+        workflow = Workflow.model_validate(project.workflow.model_dump())
+    except ValidationError as exc:
+        raise HTTPException(422, "Проверьте связи и исходники перед запуском. " +
+                            exc.errors(include_input=False)[0]["msg"].removeprefix("Value error, ")) from None
+    ensure_team_targets(workflow)
+    if not any(n.id == body.trigger and n.kind == "manual" for n in workflow.nodes):
+        raise HTTPException(422, "Для запуска по кнопке укажите ручной триггер")
+    return app.state.engine.start(workflow, body.trigger, project_id=project_id)
 
 
 class OpenAIKey(Model):
@@ -103,7 +216,7 @@ class OpenAIKey(Model):
 async def connect_openai(body: OpenAIKey, request: Request) -> PublicConnection:
     origin = urlsplit(request.headers.get("origin", ""))
     local = {"localhost", "127.0.0.1", "::1"}
-    if (not request.client or request.client.host not in local or origin.hostname not in local
+    if (not is_local_studio(request) or origin.hostname not in local
             or origin.netloc != request.headers.get("host") or origin.scheme not in {"http", "https"}):
         raise HTTPException(403, "Откройте редактор на локальном компьютере")
     gateway = app.state.engine.gateway
@@ -141,7 +254,7 @@ class Description(Model):
     target: Target
 
 
-@app.get("/api/templates")
+@app.get("/api/templates", dependencies=[Depends(local_studio)])
 async def templates() -> list[Template]:
     rows = app.state.store.db.execute("SELECT id,body FROM templates ORDER BY rowid DESC")
     return [Template(id="repair", graph=repair_template(app.state.engine.gateway),
@@ -149,7 +262,7 @@ async def templates() -> list[Template]:
             *(TemplateDraft.model_validate_json(raw).published(key) for key, raw in rows)]
 
 
-@app.post("/api/templates", status_code=201)
+@app.post("/api/templates", status_code=201, dependencies=[Depends(local_studio)])
 async def publish_template(graph: TemplateDraft) -> Template:
     key = uuid4().hex
     store = app.state.store
@@ -158,15 +271,17 @@ async def publish_template(graph: TemplateDraft) -> Template:
     return graph.published(key)
 
 
-@app.post("/api/templates/generate")
-async def generate_template(body: Description) -> Blueprint:
+@app.post("/api/templates/generate", dependencies=[Depends(studio_user)])
+async def generate_template(body: Description, request: Request) -> Blueprint:
+    if not is_local_studio(request) and body.target.connection not in team_connections():
+        raise HTTPException(403, "Это подключение недоступно в совместных проектах")
     try:
         return await generate(app.state.engine.gateway, body.text, body.target)
     except (ValueError, httpx.HTTPError, LookupError, TypeError) as error:
         raise HTTPException(422, reason(error)) from None
 
 
-@app.get("/api/demo/repair")
+@app.get("/api/demo/repair", dependencies=[Depends(studio_user)])
 async def repair() -> Workflow:
     try:
         return repair_demo(app.state.engine.gateway)
@@ -174,7 +289,7 @@ async def repair() -> Workflow:
         raise HTTPException(404, str(error)) from None
 
 
-@app.get("/api/practice/{project}")
+@app.get("/api/practice/{project}", dependencies=[Depends(studio_user)])
 def practice_sources(project: Literal["book-index", "label-studio", "reading-room", "parcel-ledger"]) -> list[Source]:
     root = Path(__file__).resolve().parents[2] / "samples/practice" / project
     if not root.is_dir():
@@ -182,7 +297,7 @@ def practice_sources(project: Literal["book-index", "label-studio", "reading-roo
     return sources(root)
 
 
-@app.post("/api/sources/github")
+@app.post("/api/sources/github", dependencies=[Depends(studio_user)])
 async def github_sources(body: GitHubSource) -> list[Source]:
     try:
         return await import_github(app.state.engine.gateway.client, body)
@@ -197,7 +312,18 @@ async def github_sources(body: GitHubSource) -> list[Source]:
 @app.post("/api/inbox", status_code=201)
 async def receive(body: Receipt, request: Request):
     key = request.headers.get("Idempotency-Key", "")
-    run = await get_run(body.run_id)
+    if not is_local_studio(request):
+        # A shared deployment accepts only the exact payload recorded by its engine.
+        # Remain independent of forwarded client IPs and proxy host configuration.
+        node_id = key.removeprefix(body.run_id + "/")
+        recorded = app.state.store.db.execute(
+            "SELECT body FROM outgoing_webhooks WHERE run_id=? AND node_id=?", (body.run_id, node_id)).fetchone()
+        if not recorded or recorded[0] != await request.body():
+            raise HTTPException(403, "Неизвестная доставка")
+    accounts.check_origin(request)
+    run = app.state.store.run(body.run_id)
+    if run is None:
+        raise HTTPException(404, "Прогон не найден")
     if not any(f"{run.id}/{step.node_id}" == key and step.kind == "webhook" for step in run.steps):
         raise HTTPException(422, "Получатель ожидает идентификатор шага доставки")
     store = app.state.store
@@ -212,7 +338,8 @@ async def receive(body: Receipt, request: Request):
 
 
 @app.get("/api/runs/{key}/receipts", response_model=list[Receipt])
-async def receipts(key: Id) -> JSONResponse:
+async def receipts(key: Id, request: Request) -> JSONResponse:
+    await get_run(key, request)
     rows = app.state.store.db.execute("SELECT body FROM receipts WHERE substr(key,1,?)=?", (len(key)+1, key+"/"))
     payloads = []
     for (record,) in rows:
@@ -222,20 +349,37 @@ async def receipts(key: Id) -> JSONResponse:
     return JSONResponse(payloads)
 
 
-@app.post("/api/runs", status_code=202)
+@app.post("/api/runs", status_code=202, dependencies=[Depends(local_studio)])
 async def start_run(body: Start) -> Run:
     if not any(n.id == body.trigger and n.kind == "manual" for n in body.workflow.nodes):
         raise HTTPException(422, "Для запуска по кнопке укажите ручной триггер")
     return app.state.engine.start(body.workflow, body.trigger)
 
 
-@app.get("/api/runs")
+@app.get("/api/runs", dependencies=[Depends(local_studio)])
 async def recent_runs() -> list[RunSummary]:
     return app.state.store.recent()
 
 
+@app.get("/api/ci/history", dependencies=[Depends(local_studio)])
+def ci_history() -> dict:
+    return app.state.actions_history.history()
+
+
+@app.get("/api/ci/history/{run_id}/reports", dependencies=[Depends(local_studio)])
+def ci_reports(run_id: int, attempt: int = 1) -> dict:
+    if run_id < 1 or attempt < 1:
+        raise HTTPException(422, "Номер запуска и попытки должны быть положительными")
+    return app.state.actions_history.reports(run_id, attempt)
+
+
 @app.get("/api/runs/{key}")
-async def get_run(key: str) -> Run:
+async def get_run(key: str, request: Request) -> Run:
+    owner = app.state.store.db.execute("SELECT project_id FROM project_runs WHERE run_id=?", (key,)).fetchone()
+    if owner:
+        projects.accessible_row(request, owner[0], False)
+    else:
+        await local_studio(request)
     run = app.state.store.run(key)
     if run is None:
         raise HTTPException(404, "Прогон не найден")
@@ -243,8 +387,8 @@ async def get_run(key: str) -> Run:
 
 
 @app.get("/api/runs/{key}/steps/{node_id}/delivery", response_model=WebhookDelivery)
-async def webhook_delivery(key: Id, node_id: Id):
-    run = await get_run(key)
+async def webhook_delivery(key: Id, node_id: Id, request: Request):
+    run = await get_run(key, request)
     step = next((s for s in run.steps if s.node_id == node_id and s.kind == "webhook"), None)
     if step is None:
         raise HTTPException(404, "У этого прогона нет такого webhook-шага")
@@ -269,7 +413,7 @@ async def webhook_delivery(key: Id, node_id: Id):
 
 @app.get("/api/runs/{key}/events", response_class=StreamingResponse)
 async def events(key: str, request: Request):
-    await get_run(key)
+    await get_run(key, request)
     engine = app.state.engine
 
     async def stream():
@@ -279,7 +423,10 @@ async def events(key: str, request: Request):
         try:
             while not await request.is_disconnected():
                 wake.clear()
-                run = await get_run(key)
+                try:
+                    run = await get_run(key, request)
+                except HTTPException:
+                    break
                 yield f"data: {run.model_dump_json()}\n\n"
                 if run.status != "running":
                     break
@@ -298,8 +445,8 @@ async def events(key: str, request: Request):
 
 @app.get("/api/runs/{key}/submission", response_class=JSONResponse,
          responses={200: {"content": {"text/html": {"schema": {"type": "string"}}}}})
-async def export_submission(key: str, format: Literal["json", "html"] = "json"):
-    run = await get_run(key)
+async def export_submission(key: str, request: Request, format: Literal["json", "html"] = "json"):
+    run = await get_run(key, request)
     if run.status == "running":
         raise HTTPException(409, "Дождитесь завершения прогона")
     try:

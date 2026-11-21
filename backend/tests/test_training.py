@@ -71,7 +71,7 @@ class ParticipantDataset(unittest.IsolatedAsyncioTestCase):
     async def test_public_export_and_controls(self):
         graph = training_workflow(TRAINING / "training-project")
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"GARDEN_DB": str(Path(temp) / "tmp.sqlite")}):
-            async with lifespan(app), httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local") as api:
+            async with lifespan(app), httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost") as api:
                 response = await api.post("/api/runs", json={"workflow": graph.model_dump(), "trigger": "manual"})
                 self.assertEqual(response.status_code, 202)
                 await asyncio.gather(*app.state.engine.tasks)
