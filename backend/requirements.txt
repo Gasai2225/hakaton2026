@@ -11,4 +11,5 @@ univers>=32.0.1,<33
 regex>=2024.11
 PyYAML>=6.0.2,<7
 cryptography>=45
+reportlab>=4.4,<5
 keyring>=25,<26; sys_platform == "win32"

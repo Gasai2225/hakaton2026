@@ -450,7 +450,7 @@ function editor(project?: Project, user?: Account) {
 }
 createRoot(document.getElementById('root')!).render(<StrictMode>
   {localReport ? <div className={workspaceStyles.workspace}><Suspense fallback={<p role="status">Загружаем отчёт…</p>}>
-    <BrowserReportPage runId={localReport[1]} nodeId={localReport[2]}/>
+    <BrowserReportPage runId={localReport[1]} nodeId={localReport[2]} local/>
   </Suspense></div> : legacy ? <>{editor()}<Suspense fallback={null}><BrowserNotification local/></Suspense></>
     : <Workspace renderEditor={editor} />}
 </StrictMode>)

@@ -485,7 +485,7 @@ export interface components {
              * @default count_gte
              * @enum {string}
              */
-            predicate: "count_gte" | "severity_eq" | "rule_regex";
+            predicate: "count_gte" | "count_eq" | "count_lte" | "severity_eq" | "severity_gte" | "category_eq" | "path_matches" | "rule_regex" | "analysis_status_eq";
             /**
              * Value
              * @default 1

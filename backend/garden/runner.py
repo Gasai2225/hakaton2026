@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -8,20 +9,38 @@ from pydantic import ValidationError
 
 from garden.integrations import Gateway, prepare_notification
 from garden.models import (
-    ANALYZERS, TRIGGERS, Branch, Finding, GitEvent, Node, Receipt, Review, Run, Step, Workflow, analysis_status_for,
+    ANALYZERS, SEVERITY_LEVELS, TRIGGERS, Branch, Finding, GitEvent, Node, Receipt, Review, Run, Step, Workflow,
+    analysis_status_for,
 )
 from garden.notifications import project_recipients
+from garden.path_masks import matches_any, parse_masks
 from garden.scanners import analyze
 from garden.storage import Store
 
 
-def branch(node: Node, findings: list[Finding]) -> Branch:
-    if node.predicate == "count_gte":
-        matched = len(findings) >= int(node.value)
-    elif node.predicate == "severity_eq":
-        matched = any(f.severity == node.value for f in findings)
-    else:
-        matched = any(regex.search(node.value, f.rule, timeout=0.03) for f in findings)
+def branch(node: Node, findings: list[Finding], upstream: Iterable[Step] = ()) -> Branch:
+    value = node.value
+    match node.predicate:
+        case "count_gte":
+            matched = len(findings) >= int(value)
+        case "count_eq":
+            matched = len(findings) == int(value)
+        case "count_lte":
+            matched = len(findings) <= int(value)
+        case "severity_eq":
+            matched = any(f.severity == value for f in findings)
+        case "severity_gte":
+            threshold = SEVERITY_LEVELS.index(value)
+            matched = any(SEVERITY_LEVELS.index(f.severity) >= threshold for f in findings)
+        case "category_eq":
+            matched = any(f.category == value for f in findings)
+        case "path_matches":
+            includes, excludes = parse_masks(value)
+            matched = any(matches_any(f.path, includes) and not matches_any(f.path, excludes) for f in findings)
+        case "rule_regex":
+            matched = any(regex.search(value, f.rule, timeout=0.03) for f in findings)
+        case "analysis_status_eq":
+            matched = analysis_status_for(upstream) == value
     return "yes" if matched else "no"
 
 
@@ -158,7 +177,7 @@ class Engine:
                         step.message = "Подходящих файлов по маске нет"
                         outcome = "warning"
                 elif node.kind == "condition":
-                    step.branch = branch(node, incoming_findings)
+                    step.branch = branch(node, incoming_findings, (steps[k] for k in contributors[key]))
                     step.message = "Условие выполнено" if step.branch == "yes" else "Условие не выполнено"
                 elif node.kind == "explain":
                     await self.explain(node, step, run, incoming_findings)

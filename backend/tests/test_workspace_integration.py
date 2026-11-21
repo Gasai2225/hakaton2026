@@ -142,10 +142,18 @@ class WorkspaceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(raw.text.startswith('{\n  "created_at": '))
         self.assertEqual(raw.json(), {"created_at": report["created_at"], **delivery["payload"]})
         self.assertEqual((await self.other.get(raw_url)).status_code, 404)
+        pdf_url = report_url + ".pdf"
+        pdf = (await self.editor.get(pdf_url)).raise_for_status()
+        self.assertEqual(pdf.headers["content-type"], "application/pdf")
+        self.assertEqual(pdf.headers["content-disposition"],
+                         f'attachment; filename="garden-report-{notice["run_id"]}-hook.pdf"')
+        self.assertTrue(pdf.content.startswith(b"%PDF-"))
+        self.assertEqual((await self.other.get(pdf_url)).status_code, 404)
         rights = await self.owner.patch(path + "/members/" + member_id, json={"role": "reporter", "can_run": False})
         rights.raise_for_status()
         self.assertEqual((await self.editor.get(run_url)).status_code, 403)
         self.assertEqual((await self.editor.get(raw_url)).raise_for_status().json(), raw.json())
+        self.assertTrue((await self.editor.get(pdf_url)).raise_for_status().content.startswith(b"%PDF-"))
         dismiss = f"/api/browser-reports/{notice['run_id']}/hook/dismiss"
         self.assertEqual((await self.editor.post(dismiss)).status_code, 404)
         self.assertEqual((await self.owner.post(dismiss)).status_code, 204)

@@ -48,7 +48,7 @@ export default function BrowserNotification({ local = false }: { local?: boolean
         encodeURIComponent(current.node_id) + '/dismiss' + suffix, 'POST')
       dialog.current?.close()
       setNotice(null)
-      if (open) window.location.assign(reportHref(current.run_id, current.node_id))
+      if (open) window.location.assign(reportHref(current.run_id, current.node_id, local))
     } catch (error) {
       setError(message(error))
     } finally {

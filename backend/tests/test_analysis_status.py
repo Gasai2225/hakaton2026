@@ -91,6 +91,27 @@ class AnalysisStatus(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(run["steps"][-1]["status"], "skipped")
             self.assertEqual((run["status"], run["analysis_status"]), ("succeeded", "complete"))
 
+    async def test_coverage_condition_evaluates_only_its_active_inputs(self):
+        graph = chain("secrets", broken=True)
+        graph.nodes.append(Node(id="clean", kind="secrets", pattern="*.properties", x=0, y=0))
+        graph.edges.append(Edge(id="start-clean", source="start", target="clean"))
+        for target, coverage, inputs in [
+            ("complete", "complete", ["clean"]),
+            ("partial", "partial", ["secrets"]),
+            ("unchecked", "not_run", ["start"]),
+            ("merged", "partial", ["clean", "secrets"]),
+            ("wrong", "complete", ["clean", "secrets"]),
+        ]:
+            graph.nodes.append(Node(id=target, kind="condition", predicate="analysis_status_eq",
+                                    value=coverage, x=0, y=0))
+            graph.edges.extend(Edge(id=f"{source}-{target}", source=source, target=target) for source in inputs)
+        async with lifespan(app):
+            url = await self.execute(graph)
+            run = (await self.api.get(url)).raise_for_status().json()
+        self.assertEqual(run["analysis_status"], "partial")
+        self.assertEqual({step["node_id"]: step["branch"] for step in run["steps"] if step["kind"] == "condition"},
+                         {"complete": "yes", "partial": "yes", "unchecked": "yes", "merged": "yes", "wrong": "no"})
+
     async def test_each_receiver_gets_the_coverage_of_its_own_inputs(self):
         graph = chain("secrets", "condition", broken=True)
         graph.files[-1].text = "classroom.api-key=${API_KEY}"

@@ -2,7 +2,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 from pathlib import PurePosixPath
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 
 import regex
 from apscheduler.triggers.cron import CronTrigger
@@ -17,12 +17,16 @@ GitEventName = Literal["push", "pull_request"]
 Status = Literal["pending", "running", "succeeded", "warning", "failed", "skipped"]
 AnalysisStatus = Literal["complete", "partial", "not_run"]
 Severity = Literal["low", "medium", "high", "critical"]
+FindingCategory = Literal["SECRET", "SAST", "SCA"]
+ConditionPredicate = Literal["count_gte", "count_eq", "count_lte", "severity_eq", "severity_gte",
+                             "category_eq", "path_matches", "rule_regex", "analysis_status_eq"]
 OsvStatus = Literal["checked", "incomplete", "skipped"]
 Branch = Literal["yes", "no"]
 Destination = Literal["configured", "inbox", "https", "telegram", "email", "browser"]
 Id = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
 TRIGGERS = {"manual", "schedule", "git_event"}
 ANALYZERS = ("secrets", "sast", "sca")
+SEVERITY_LEVELS = get_args(Severity)
 
 
 class Model(BaseModel):
@@ -68,7 +72,7 @@ class Node(Model):
     cron: str = Field(default="0 9 * * *", max_length=100)
     enabled: bool = False
     git_events: list[GitEventName] = Field(default_factory=lambda: ["push", "pull_request"], max_length=2)
-    predicate: Literal["count_gte", "severity_eq", "rule_regex"] = "count_gte"
+    predicate: ConditionPredicate = "count_gte"
     value: str = Field(default="1", max_length=160)
     connection: str = Field(default="ollama", max_length=64)
     model: str = Field(default="", max_length=180)
@@ -95,15 +99,20 @@ class Node(Model):
         if self.kind == "git_event" and (not self.git_events or len(set(self.git_events)) != len(self.git_events)):
             raise ValueError("Выберите одно или два разных Git-события")
         if self.kind == "condition":
-            if self.predicate == "count_gte" and not self.value.isascii():
-                raise ValueError("Порог должен быть целым числом")
-            if self.predicate == "count_gte" and not self.value.isdecimal():
+            predicate, value = self.predicate, self.value
+            if predicate in {"count_gte", "count_eq", "count_lte"} and not (value.isascii() and value.isdecimal()):
                 raise ValueError("Порог должен быть целым неотрицательным числом")
-            if self.predicate == "severity_eq" and self.value not in {"low", "medium", "high", "critical"}:
+            if predicate in {"severity_eq", "severity_gte"} and value not in SEVERITY_LEVELS:
                 raise ValueError("Выберите уровень важности")
-            if self.predicate == "rule_regex":
+            if predicate == "category_eq" and value not in get_args(FindingCategory):
+                raise ValueError("Выберите категорию находок")
+            if predicate == "analysis_status_eq" and value not in get_args(AnalysisStatus):
+                raise ValueError("Выберите статус анализа")
+            if predicate == "path_matches":
+                parse_masks(value)
+            if predicate == "rule_regex":
                 try:
-                    regex.compile(self.value)
+                    regex.compile(value)
                 except regex.error as error:
                     raise ValueError("Некорректное регулярное выражение") from error
         return self
@@ -203,7 +212,7 @@ class Finding(Model):
     classification: str | None = None
     dependency: Dependency | None = None
 
-    category: Literal["SECRET", "SAST", "SCA"]
+    category: FindingCategory
 
     @model_validator(mode="before")
     @classmethod
