@@ -15,7 +15,7 @@ export type Summary = Schema['RunSummary']
 export type Delivery = Schema['WebhookDelivery']
 
 export class ApiError extends Error {
-  constructor(readonly status: number, detail: string) { super(detail) }
+  constructor(readonly status: number, detail: string, readonly code?: string) { super(detail) }
 }
 
 export async function request<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
@@ -26,7 +26,9 @@ export async function request<T>(path: string, method = 'GET', body?: unknown, s
   })
   if (!response.ok) {
     const result = await response.json().catch(() => ({}))
-    throw new ApiError(response.status, typeof result.detail === 'string' ? result.detail : 'Ошибка сервера · HTTP ' + response.status)
+    throw new ApiError(response.status,
+      typeof result?.detail === 'string' ? result.detail : 'Ошибка сервера · HTTP ' + response.status,
+      typeof result?.code === 'string' ? result.code : undefined)
   }
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>

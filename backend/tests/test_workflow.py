@@ -61,6 +61,53 @@ fun configure(http: HttpSecurity) {
         with self.assertRaises(ValidationError):
             Workflow.model_validate(graph.model_dump())
 
+    def test_sast_file_masks_exclude_entire_test_directories_at_any_depth(self):
+        files = [Source(path=path, text="val ready = true") for path in
+                 ("App.kt", "build/tasks.kts", "contest/src/Contest.kt", "src/testing/Fixture.kt")]
+        files.extend(Source(path=path, text="fun (") for path in
+                     ("test/Root.kt", "app/src/test/kotlin/Suite.kt", "app/test/tasks.kts"))
+        for pattern in ("*.kt, *.kts, !**/test/**", "!**/test/**, *.kts, *.kt", "!**/test/**"):
+            with self.subTest(pattern=pattern):
+                result = analyze("sast", files, pattern)
+                self.assertEqual(result.checked, 4)
+                self.assertEqual(result.issues, [])
+
+    def test_mask_list_preserves_glob_classes_and_rejects_empty_entries(self):
+        files = [Source(path=path, text="val ready = true")
+                 for path in ("src/A.kt", "src/B.kt", "src/,.kt", "B.kts")]
+        self.assertEqual(analyze("sast", files, "src/[A,].kt").checked, 2)
+        self.assertEqual(analyze("sast", files, "src/[A,].kt, *.kts").checked, 3)
+        for pattern in ("*.kt, !", "*.kt, , *.kts", ",*.kt", "*.kt,"):
+            with self.subTest(pattern=pattern), self.assertRaises(ValidationError):
+                Node(id="scan", kind="sast", x=0, y=0, pattern=pattern)
+
+    def test_globstar_skips_whole_directories_and_keeps_existing_recursive_stars(self):
+        files = [Source(path=path, text="val ready = true") for path in (
+            "src/pkg/nested/One.kt", "src/modules/pkg/Two.kt", "src/notpkg/Three.kt", "src/pkg/Four.kts")]
+        self.assertEqual(analyze("sast", files, "src/**/pkg/*.kt").checked, 2)
+        self.assertEqual(analyze("sast", files, "src/m**/pkg/*.kt").checked, 1)
+        self.assertEqual(analyze("sast", files, "src/**/pkg/**/nested/*.kt").checked, 1)
+
+    def test_sca_excludes_modules_and_their_auxiliary_lockfiles(self):
+        build = 'dependencies { implementation("org.apache.commons:commons-text:1.9") }'
+        lock = "org.apache.commons:commons-text:1.10.0=runtimeClasspath"
+        files = [Source(path=module + "/" + name, text=content)
+                 for module in ("app", "modules/test/example")
+                 for name, content in (("build.gradle.kts", build), ("gradle.lockfile", lock))]
+        selected = "*build.gradle.kts, *gradle.lockfile, !**/test/**"
+        for pattern, count, version, advisories in [
+            (selected, 2, "1.10.0", []),
+            (selected + ", !*gradle.lockfile", 1, "1.9", ["CVE-2022-42889"]),
+            ("app/build.gradle.kts", 2, "1.10.0", []),  # Existing single-mask workflow uses its sibling lockfile.
+        ]:
+            with self.subTest(pattern=pattern):
+                result = analyze("sca", files, pattern, extended_sca=True)
+                self.assertEqual(result.issues + result.lockfile.issues, [])
+                self.assertEqual(result.checked, count)
+                self.assertEqual([p.version for p in result.packages], [version])
+                self.assertEqual([(f.path, f.advisory) for f in result.findings],
+                                 [("app/build.gradle.kts", advisory) for advisory in advisories])
+
     @patch.dict(os.environ, {"GARDEN_EXTENDED_SCA": "1"})
     def test_gradle_variables_and_unknown_version(self):
         code = 'dependencies { implementation("training.demo:example-lib:$demoVersion") }'
@@ -134,6 +181,21 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.execute(graph))["findings"], [])
         self.assertEqual(len((await self.api.get("/api/runs")).json()), 2)
 
+    async def test_run_validation_identifies_the_empty_workflow_field(self):
+        graph = demo().model_dump()
+        graph["files"] = []
+        for path, method, body in [
+            ("/api/runs", "POST", {"trigger": "start", "workflow": graph}), ("/api/workflow", "PUT", graph),
+        ]:
+            response = await self.api.request(method, path, json=body)
+            self.assertEqual(response.status_code, 422)
+            self.assertEqual(response.json(), {"code": "missing_sources", "detail": "В проекте нет исходных файлов для проверки."})
+        graph.update(nodes=[], edges=[])
+        response = await self.api.post("/api/runs", json={"trigger": "start", "workflow": graph})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("В сценарии нет блоков", response.json()["detail"])
+        self.assertNotIn("code", response.json())
+
     async def test_run_uses_draft_until_explicit_save(self):
         graph = demo()
         graph.nodes[1].pattern = "*.xml"
@@ -150,6 +212,20 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         response = await self.api.put("/api/workflow", json=graph.model_dump())
         self.assertEqual(response.status_code, 200)
         self.assertEqual((await self.api.get("/api/workflow")).json(), graph.model_dump())
+
+    async def test_saved_node_runs_with_multiple_file_masks_and_exclusions(self):
+        graph = demo()
+        pattern = "*.kt, *.kts, !**/test/**"
+        graph.nodes[1].pattern = pattern
+        for path in ("build/Setup.kts", "src/test/kotlin/Unit.kt"):
+            graph.files.append(Source(path=path, text=graph.files[0].text))
+        graph.files.append(Source(path="app.properties", text="spring.datasource.password=demo"))
+        (await self.api.put("/api/workflow", json=graph.model_dump())).raise_for_status()
+        saved = Workflow.model_validate((await self.api.get("/api/workflow")).raise_for_status().json())
+        self.assertEqual(saved.nodes[1].pattern, pattern)
+        result = await self.execute(saved)
+        self.assertEqual(result["analysis_status"], "complete")
+        self.assertCountEqual([hit["path"] for hit in result["findings"]], [graph.files[0].path, "build/Setup.kts"])
 
     async def test_partial_run_exports_confirmed_findings(self):
         graph = demo()

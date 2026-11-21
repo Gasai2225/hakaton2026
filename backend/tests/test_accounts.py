@@ -125,7 +125,7 @@ class AccountsTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(account_oauth.httpx, "AsyncClient", return_value=external):
                 callback = await self.client.get("/api/auth/oauth/google/callback",
                                                  params={"code": "abc", "state": query["state"][0]})
-            self.assertEqual(callback.headers["location"], "/")
+            self.assertEqual(callback.headers["location"], "/?auth_complete=1")
             self.assertEqual((await self.client.get("/api/auth/me")).json()["email"], "first@example.com")
             await self.client.post("/api/auth/logout")
         self.assertEqual(self.db.execute("SELECT count(*) FROM accounts").fetchone()[0], 1)
@@ -150,7 +150,7 @@ class AccountsTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(account_oauth.httpx, "AsyncClient", return_value=external):
                 result = await self.client.get(f"/api/auth/oauth/{provider}/callback",
                                                params={"code": "code", "state": state, "device_id": "device"})
-            self.assertEqual(result.headers["location"], "/")
+            self.assertEqual(result.headers["location"], "/?auth_complete=1")
             self.assertEqual((await self.client.get("/api/auth/me")).json()["name"], "Анна")
         self.assertEqual(self.db.execute("SELECT count(*) FROM accounts").fetchone()[0], 1)
 

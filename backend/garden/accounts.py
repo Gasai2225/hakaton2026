@@ -12,6 +12,8 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
+from garden.invitations import InviteToken, find_invitation
+
 
 router = APIRouter(prefix="/api/auth")
 SESSION_COOKIE = "garden_session"
@@ -84,6 +86,16 @@ class Profile(BaseModel):
 
 class Register(Login, Profile):
     password: SecretStr = Field(min_length=8, max_length=128)
+    invitation_token: InviteToken | None = None
+
+
+class RegisterAndJoin(Register):
+    invitation_token: InviteToken = Field(...)
+
+
+class JoinedProject(BaseModel):
+    user: User
+    project_id: str
 
 
 def digest(value: str) -> bytes:
@@ -100,8 +112,8 @@ def public_url() -> str:
     return value
 
 
-def check_origin(request: Request) -> None:
-    if request.method in {"GET", "HEAD", "OPTIONS"}:
+def check_origin(request: Request, *, include_read: bool = False) -> None:
+    if not include_read and request.method in {"GET", "HEAD", "OPTIONS"}:
         return
     origin = request.headers.get("origin")
     expected = public_url() or str(request.base_url).rstrip("/")
@@ -113,7 +125,7 @@ def cookie_secure(request: Request) -> bool:
     return request.url.scheme == "https" or public_url().startswith("https://")
 
 
-def current_user(request: Request) -> User:
+def session_user(request: Request) -> User | None:
     # Call on the event loop, which owns the SQLite connection.
     cookie = request.cookies.get(SESSION_COOKIE, "")
     if re.fullmatch(r"[A-Za-z0-9_-]{43}", cookie):
@@ -123,20 +135,31 @@ def current_user(request: Request) -> User:
         """, (digest(cookie), int(time.time()))).fetchone()
         if row:
             return User(id=row[0], email=row[1], name=row[2])
-    raise HTTPException(401, "Войдите в аккаунт")
+    return None
 
 
-def start_session(request: Request, response: Response, user: User) -> None:
+def current_user(request: Request) -> User:
+    user = session_user(request)
+    if user is None:
+        raise HTTPException(401, "Войдите в аккаунт")
+    return user
+
+
+def _write_session(request: Request, response: Response, user: User) -> None:
     db = request.app.state.store.db
     raw = secrets.token_urlsafe(32)
     now = int(time.time())
-    with db:
-        db.execute("DELETE FROM account_sessions WHERE expires<=? OR digest=?",
-                   (now, digest(request.cookies.get(SESSION_COOKIE, ""))))
-        db.execute("INSERT INTO account_sessions VALUES (?, ?, ?)", (digest(raw), user.id, now + SESSION_AGE))
+    db.execute("DELETE FROM account_sessions WHERE expires<=? OR digest=?",
+               (now, digest(request.cookies.get(SESSION_COOKIE, ""))))
+    db.execute("INSERT INTO account_sessions VALUES (?, ?, ?)", (digest(raw), user.id, now + SESSION_AGE))
     response.set_cookie(SESSION_COOKIE, raw, max_age=SESSION_AGE, httponly=True,
                         secure=cookie_secure(request), samesite="lax", path="/")
     response.headers["Cache-Control"] = "no-store"
+
+
+def start_session(request: Request, response: Response, user: User) -> None:
+    with request.app.state.store.db:
+        _write_session(request, response, user)
 
 
 def rate_limit(request: Request, action: str, limit: int) -> None:
@@ -163,22 +186,42 @@ async def password_hash(request: Request, password: SecretStr, salt: bytes) -> b
                                        n=32768, r=8, p=3, dklen=32, maxmem=64 * 1024 * 1024)
 
 
-@router.post("/register", status_code=201)
-async def register(form: Register, request: Request, response: Response) -> User:
+async def create_account(form: Register, request: Request, response: Response, *, join: bool) -> tuple[User, str | None]:
     check_origin(request)
     rate_limit(request, "register", 15)
     user = User(id=uuid4().hex, email=form.email, name=form.name)
     salt = secrets.token_bytes(16)
     hashed = await password_hash(request, form.password, salt)
     db = request.app.state.store.db
-    try:
-        with db:
-            db.execute("INSERT INTO accounts(id,email,name,salt,password_hash) VALUES (?,?,?,?,?)",
-                       (user.id, user.email, user.name, salt, hashed))
-    except sqlite3.IntegrityError:
-        raise HTTPException(409, "Этот адрес уже зарегистрирован") from None
-    start_session(request, response, user)
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        invite = find_invitation(db, form.invitation_token) if form.invitation_token else None
+        if invite:
+            if invite.email != user.email or (invite.account_id and not join):
+                raise HTTPException(422, "Для регистрации по приглашению укажите почту, на которую его отправили")
+            if invite.account_id:
+                raise HTTPException(409, "Приглашение уже принято. Войдите в аккаунт участника")
+        inserted = db.execute("""INSERT INTO accounts(id,email,name,salt,password_hash) VALUES (?,?,?,?,?)
+                                 ON CONFLICT(email) DO NOTHING""", (user.id, user.email, user.name, salt, hashed))
+        if not inserted.rowcount:
+            raise HTTPException(409, "Этот адрес уже зарегистрирован")
+        if join and invite:
+            db.execute("UPDATE project_members SET account_id=?,expires_at=NULL WHERE id=?", (user.id, invite.member_id))
+        _write_session(request, response, user)
+    return user, invite.project_id if invite else None
+
+
+@router.post("/register", status_code=201)
+async def register(form: Register, request: Request, response: Response) -> User:
+    user, _ = await create_account(form, request, response, join=False)
     return user
+
+
+@router.post("/register-and-join", status_code=201)
+async def register_and_join(form: RegisterAndJoin, request: Request, response: Response) -> JoinedProject:
+    user, project_id = await create_account(form, request, response, join=True)
+    assert project_id is not None
+    return JoinedProject(user=user, project_id=project_id)
 
 
 @router.post("/login")
