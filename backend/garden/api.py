@@ -21,6 +21,7 @@ from garden.github_source import GitHubSource, import_github
 from garden.integrations import Gateway
 from garden.models import (Blueprint, BrowserReport, BrowserReportNotice, Finding, Id, Model, PublicConnection,
                            Receipt, Report, Run, RunSummary, Source, Target, WebhookDelivery, Workflow)
+from garden.pdf_report import render_report_pdf
 from garden.runner import Engine, reason
 from garden.scenarios import generate, repair_demo, repair_template, sources
 from garden.storage import Store
@@ -488,6 +489,15 @@ async def browser_report_json(key: Id, node_id: Id, request: Request) -> Respons
     report = await browser_report(key, node_id, request)
     data = {"created_at": report.created_at, **report.payload.model_dump(mode="json")}
     return Response(json.dumps(data, ensure_ascii=False, indent=2) + "\n", media_type="application/json")
+
+
+@app.get("/api/runs/{key}/steps/{node_id}/report.pdf", response_class=Response,
+         responses={200: {"content": {"application/pdf": {}}}})
+async def browser_report_pdf(key: Id, node_id: Id, request: Request) -> Response:
+    report = await browser_report(key, node_id, request)
+    pdf = await asyncio.to_thread(render_report_pdf, report)
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="garden-report-{key}-{node_id}.pdf"'})
 
 
 @app.get("/api/runs/{key}/events", response_class=StreamingResponse)

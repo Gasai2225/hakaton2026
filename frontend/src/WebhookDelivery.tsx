@@ -13,7 +13,7 @@ const deliveryStates: Record<Delivery['state'], string> = {
   unknown: 'Статус отправки неизвестен',
 }
 
-export default function WebhookDelivery({ runId, nodeId }: { runId: string; nodeId: string }) {
+export default function WebhookDelivery({ runId, nodeId, local }: { runId: string; nodeId: string; local: boolean }) {
   const [delivery, setDelivery] = useState<Delivery>()
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
@@ -35,7 +35,7 @@ export default function WebhookDelivery({ runId, nodeId }: { runId: string; node
 
   return <section aria-label="Отчёт уведомления">
     <strong>{deliveryStates[state]}</strong>
-    {delivery.browser_report && <p><a href={reportHref(runId, nodeId)}>Открыть отчёт</a></p>}
+    {delivery.browser_report && <p><a href={reportHref(runId, nodeId, local)}>Открыть отчёт</a></p>}
     <ReceiptDetails payload={payload}/>
   </section>
 }

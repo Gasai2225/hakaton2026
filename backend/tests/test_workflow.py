@@ -274,8 +274,17 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             graph.nodes.append(Node(id=port, kind="secrets", x=0, y=0))
             graph.edges.append(Edge(id=f"to-{port}", source="gate", target=port, branch=port))
 
-        for predicate, yes_value, no_value in [("count_gte", "1", "2"), ("severity_eq", "medium", "critical"),
-                                              ("rule_regex", r"^SECRET-.*$", r"^SCA-")]:
+        for predicate, yes_value, no_value in [
+            ("count_gte", "1", "2"),
+            ("count_eq", "1", "0"),
+            ("count_lte", "1", "0"),
+            ("severity_eq", "medium", "critical"),
+            ("severity_gte", "low", "high"),
+            ("category_eq", "SECRET", "SCA"),
+            ("path_matches", "*.properties, **/Demo.kt, !**/test/**", "*.kt, !**/Demo.kt"),
+            ("rule_regex", r"^SECRET-.*$", r"^SCA-"),
+            ("analysis_status_eq", "complete", "not_run"),
+        ]:
             for value, active, skipped in [(yes_value, "yes", "no"), (no_value, "no", "yes")]:
                 with self.subTest(predicate=predicate, value=value):
                     condition.predicate, condition.value = predicate, value
@@ -287,11 +296,22 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual((steps[skipped]["status"], steps[skipped]["message"]),
                                      ("skipped", "Ветка не выбрана"))
 
-        condition.value = "["
-        response = await self.api.put("/api/workflow", json=graph.model_dump())
-        self.assertEqual(response.status_code, 422)
-        self.assertIn("регулярное выражение", response.json()["detail"])
-        condition.value = "SECRET"
+        for predicate, value, error in [
+            ("count_eq", "-1", "неотрицательным числом"),
+            ("count_lte", "1.5", "неотрицательным числом"),
+            ("severity_gte", "unknown", "уровень важности"),
+            ("category_eq", "unknown", "категорию находок"),
+            ("path_matches", "*.kt, !", "маску пути"),
+            ("rule_regex", "[", "регулярное выражение"),
+            ("analysis_status_eq", "unknown", "статус анализа"),
+        ]:
+            with self.subTest(predicate=predicate, invalid_value=value):
+                condition.predicate, condition.value = predicate, value
+                response = await self.api.put("/api/workflow", json=graph.model_dump())
+                self.assertEqual(response.status_code, 422)
+                self.assertIn(error, response.json()["detail"])
+
+        condition.predicate, condition.value = "rule_regex", "SECRET"
         graph.edges.append(Edge(id="back", source="yes", target="scan"))
         response = await self.api.put("/api/workflow", json=graph.model_dump())
         self.assertEqual(response.status_code, 422)

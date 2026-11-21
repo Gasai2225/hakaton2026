@@ -3,6 +3,7 @@ import { Download, Settings2, Trash2 } from 'lucide-react'
 import { blocks, defaultGitEvents, eventNames, labels, Tile } from './blocks'
 import type { Profile, Run, Spec, Step, Target } from './api'
 import type { NodeLock } from './boardPresence'
+import { ConditionSettings } from './ConditionSettings'
 import { StepFindings } from './Results'
 import s from './studio.module.css'
 
@@ -72,13 +73,13 @@ export function IdleWarning({ lock, renew }: { lock: NodeLock; renew: () => Prom
   </div>
 }
 
-function StepDetails({ step, runId, findings }: Pick<Props, 'runId' | 'findings'> & { step: Step }) {
+function StepDetails({ step, runId, findings, sharedProject }: Pick<Props, 'runId' | 'findings' | 'sharedProject'> & { step: Step }) {
   return <div className={s.detail}><strong>{labels[step.status]}</strong>{step.message && <p>{step.message}</p>}
     {step.kind === 'webhook' && runId ? <>
       <small>На входе · {step.input_ids?.length ?? 0} · на выходе · {step.output_ids?.length ?? 0}</small>
       <Suspense fallback={<p role="status">Загрузка отправки…</p>}>
         <WebhookDelivery key={[runId, step.node_id, step.status, step.webhook_attempted === true].join('/')}
-          runId={runId} nodeId={step.node_id}/>
+          runId={runId} nodeId={step.node_id} local={!sharedProject}/>
       </Suspense>
     </> : <StepFindings step={step} findings={findings} />}
   </div>
@@ -89,7 +90,7 @@ export function Inspector({ node, step, profiles, findings, runId, inspectedWebh
   if (inspectedWebhook && runId) return <aside className={s.inspector} id="block-inspector" tabIndex={-1}>
     <h2>Доставка уведомления</h2>
     <p className={s.hint}>Прогон <code>{runId}</code><br />Блок <code>{inspectedWebhook.node_id}</code></p>
-    <StepDetails step={inspectedWebhook} runId={runId} findings={findings}/>
+    <StepDetails step={inspectedWebhook} runId={runId} findings={findings} sharedProject={sharedProject}/>
     <button onClick={closeWebhook}>К параметрам блока</button>
   </aside>
   const mavenMode = node?.extended_sca === false ? 'local' : 'extended'
@@ -156,17 +157,7 @@ export function Inspector({ node, step, profiles, findings, runId, inspectedWebh
           onChange={e => update({ enabled: e.target.checked })} />Включить после сохранения</label>
         {!mayRun && !readOnly && <small>Для управления действующим расписанием нужно право запуска проверок.</small>}
       </>}
-      {node.kind === 'condition' && <>
-        <label>Проверка<select value={node.predicate} onChange={e => {
-          const predicate = e.target.value as Spec['predicate']
-          update({ predicate, value: { count_gte: '1', severity_eq: 'high', rule_regex: '.*' }[predicate] })
-        }}><option value="count_gte">Число находок ≥</option><option value="severity_eq">Есть находка уровня</option>
-          <option value="rule_regex">ID правила соответствует regex</option></select></label>
-        <label>Значение{node.predicate === 'severity_eq'
-          ? <select value={node.value} onChange={e => update({ value: e.target.value })}>
-            {['low','medium','high','critical'].map(v => <option key={v}>{v}</option>)}</select>
-          : <input value={node.value} onChange={e => update({ value: e.target.value })} />}</label>
-      </>}
+      {node.kind === 'condition' && <ConditionSettings predicate={node.predicate} value={node.value} update={update}/>}
       {node.kind === 'explain' && <>
         <p className={s.hint}>Каждая модель отдельно предложит исправления для тех же находок.</p>
         {targets.map((target, i) => {
@@ -196,7 +187,7 @@ export function Inspector({ node, step, profiles, findings, runId, inspectedWebh
           : notificationChannels[destination].hint}</small>}</label>}
       </fieldset>
       {node.kind === 'git_event' && <button onClick={downloadCiGraph}><Download size={14} />Скачать ci-workflow.json</button>}
-      {step && <StepDetails step={step} runId={runId} findings={findings} />}
+      {step && <StepDetails step={step} runId={runId} findings={findings} sharedProject={sharedProject}/>}
       {!readOnly && <button className={s.delete} onClick={remove} disabled={removeBlocked || (editing && !editing.editable) || (!mayRun && node.kind === 'schedule' && node.enabled)}
         title={removeBlocked ? 'У связанного блока сейчас есть редактор' : undefined}><Trash2 size={14} />Удалить блок</button>}
     </>}
